@@ -25,6 +25,36 @@
     (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
                  (c/authenticate port ch {:credential-id "cred1"})))))
 
+(deftest rejects-non-increasing-sign-count
+  ;; Cloned-authenticator detection: a replayed or forged assertion whose
+  ;; sign-count is not strictly greater than the last stored value must be
+  ;; rejected, regardless of ceremony/user-presence/user-verification checks.
+  (let [ch (m/challenge "ch4" :authentication {:rp-id "example.com" :challenge "n"})
+        mk-port (fn [sign-count]
+                  (reify p/IWebAuthn
+                    (register! [_ _ _] nil)
+                    (authenticate! [_ challenge assertion]
+                      (m/assertion challenge (:credential-id assertion) true
+                                   {:sign-count sign-count :user-present? true :user-verified? true}))
+                    (derive-prf! [_ _] nil)))]
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
+                 (c/authenticate (mk-port 10) ch {:credential-id "cred1"} 50)))
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
+                 (c/authenticate (mk-port 50) ch {:credential-id "cred1"} 50)))
+    (is (true? (:webauthn.assertion/ok? (c/authenticate (mk-port 51) ch {:credential-id "cred1"} 50))))))
+
+(deftest allows-zero-sign-count-for-counterless-authenticators
+  ;; Both stored and reported sign-count of 0 is the spec-documented
+  ;; exception for authenticators that don't implement a signature counter.
+  (let [ch (m/challenge "ch5" :authentication {:rp-id "example.com" :challenge "n"})
+        port (reify p/IWebAuthn
+               (register! [_ _ _] nil)
+               (authenticate! [_ challenge assertion]
+                 (m/assertion challenge (:credential-id assertion) true
+                              {:sign-count 0 :user-present? true :user-verified? true}))
+               (derive-prf! [_ _] nil))]
+    (is (true? (:webauthn.assertion/ok? (c/authenticate port ch {:credential-id "cred1"} 0))))))
+
 (deftest rejects-challenge-replay
   (let [ch (m/challenge "ch3" :authentication {:rp-id "example.com" :challenge "n"})
         store (p/memory-challenge-store)
