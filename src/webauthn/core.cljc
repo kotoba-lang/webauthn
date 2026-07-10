@@ -12,6 +12,19 @@
      (seq (remove m/transports (:webauthn.credential/transports record)))
      (conj {:webauthn.problem/code :unknown-transport})
 
+     ;; The adapter's underlying signature/RP-ID/origin verification itself
+     ;; failed (a forged, replayed, or wrong-origin assertion) -- this MUST
+     ;; be its own unconditional problem, independent of the user-present?/
+     ;; user-verified?/sign-count checks below, all of which are (correctly)
+     ;; gated on ok? being true and so say nothing at all when it's false.
+     ;; Confirmed bug this closes: without this clause, a port reporting
+     ;; ok?=false produced zero problems, so valid!/authenticate never
+     ;; threw -- a cryptographically-failed assertion was returned to the
+     ;; caller exactly as if it had succeeded (authentication bypass).
+     (and (contains? record :webauthn.assertion/ok?)
+          (not (:webauthn.assertion/ok? record)))
+     (conj {:webauthn.problem/code :assertion/not-ok})
+
      (and (contains? record :webauthn.assertion/ok?)
           (:webauthn.assertion/ok? record)
           (not (:webauthn.assertion/user-present? record)))
