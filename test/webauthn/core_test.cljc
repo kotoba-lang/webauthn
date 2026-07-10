@@ -14,6 +14,24 @@
                (derive-prf! [_ _] nil))]
     (is (true? (:webauthn.assertion/ok? (c/authenticate port ch {:credential-id "cred1"}))))))
 
+(deftest rejects-a-failed-assertion
+  ;; CONFIRMED BUG regression: a port whose underlying signature/RP-ID/origin
+  ;; verification LEGITIMATELY FAILED (a forged, replayed, or wrong-origin
+  ;; assertion, ok?=false) must be rejected on its own -- independent of the
+  ;; user-present?/user-verified?/sign-count checks, all of which are
+  ;; (correctly) gated on ok? being true and so said nothing when it was
+  ;; false. Without this check, authenticate returned the failed assertion
+  ;; record to the caller exactly as if it had succeeded.
+  (let [ch (m/challenge "ch6" :authentication {:rp-id "example.com" :challenge "n"})
+        port (reify p/IWebAuthn
+               (register! [_ _ _] nil)
+               (authenticate! [_ challenge assertion]
+                 (m/assertion challenge (:credential-id assertion) false
+                              {:user-present? false :user-verified? false}))
+               (derive-prf! [_ _] nil))]
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
+                 (c/authenticate port ch {:credential-id "cred1"})))))
+
 (deftest rejects-ok-assertion-without-user-verification
   (let [ch (m/challenge "ch2" :authentication {:rp-id "example.com" :challenge "n"})
         port (reify p/IWebAuthn

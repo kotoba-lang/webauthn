@@ -24,9 +24,12 @@
     (is (:webauthn.assertion/user-verified? assertion))))
 
 (deftest rejects-invalid-hmac-authentication-signature
+  ;; c/authenticate must THROW for a bad signature, same as every other
+  ;; rejection case (core_test.cljc) -- it must not merely return an
+  ;; ok?=false record for the caller to separately notice.
   (let [verifier (hmac/verifier "secret" {})
         port (ceremony/ceremony-port verifier {})
-        challenge (m/challenge "ch1" :authentication {:challenge "challenge"})
-        assertion (c/authenticate port challenge {:credential-id "cred-1"
-                                                  :signature "bad"})]
-    (is (false? (:webauthn.assertion/ok? assertion)))))
+        challenge (m/challenge "ch1" :authentication {:challenge "challenge"})]
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (c/authenticate port challenge {:credential-id "cred-1"
+                                                 :signature "bad"})))))
