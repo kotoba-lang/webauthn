@@ -1,5 +1,14 @@
 {:paths ["src"]
- :deps {}
+ ;; cacao.edge.cbor -- the shared edge CBOR decoder (definite-length RFC 8949
+ ;; subset over js/Uint8Array) that webauthn.adapters.edge needs for
+ ;; attestationObject and COSE_Key. It lives in the cacao repo for historical
+ ;; reasons and is not CACAO-specific; depending on it beats a fifth
+ ;; hand-rolled CBOR decoder in this workspace. Only the CLJS edge adapter
+ ;; pulls it in -- the portable model/ports/validation namespaces have no
+ ;; dependency at all, and `clojure -M:test` never loads it.
+ :deps {io.github.kotoba-lang/org-chainagnostic-cacao
+        {:git/url "https://github.com/kotoba-lang/org-chainagnostic-cacao.git"
+         :git/sha "dac940566e07d8ad67bff0047ada92b45dae24a0"}}
  :aliases {:test {:extra-paths ["test"]
                   :extra-deps {io.github.cognitect-labs/test-runner
                                {:git/tag "v0.5.1" :git/sha "dfb30dd"}}

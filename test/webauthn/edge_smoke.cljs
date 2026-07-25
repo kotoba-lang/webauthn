@@ -1,0 +1,137 @@
+;; nbb smoke for webauthn.adapters.edge, driven by a virtual authenticator that
+;; really signs. `clojure -M:test` cannot reach this namespace at all -- it is
+;; CLJS-only (js/crypto.subtle, js/Uint8Array, js/TextDecoder).
+;;
+;;   nbb --classpath "src:test:<cacao>/src" test/webauthn/edge_smoke.cljs
+;;
+;; Requires Node >= 20. Exits nonzero on any failure.
+(ns webauthn.edge-smoke
+  (:require [webauthn.adapters.edge :as edge]
+            [webauthn.virtual-authenticator :as va]))
+
+(def rp-id "authn.kotobase.net")
+(def origin "https://authn.kotobase.net")
+(def config {:rp-id rp-id :origin origin})
+(def challenge "Y2hhbGxlbmdlLTAwMDAwMDAwMDAwMDAwMDAwMDAw")
+
+(def failures (atom []))
+(defn check! [label ok? & [detail]]
+  (if ok?
+    (println "ok  -" label)
+    (do (println "FAIL-" label (or detail "")) (swap! failures conj label))))
+
+(defn- expect-deny [label result]
+  (check! label (false? (:ok result)) (pr-str (select-keys result [:ok :status :error]))))
+
+(defn run [auth]
+  (let [register! (:register! auth)
+        assert! (:assert! auth)
+        state (atom {})]
+    (-> (edge/verify-registration! config (assoc (register! {:origin origin :challenge challenge})
+                                                 :challenge challenge))
+        (.then (fn [r]
+                 (swap! state assoc :registration r)
+                 (check! "a real registration ceremony verifies" (true? (:ok r)) (pr-str r))
+                 (check! "the credential id round-trips as base64url"
+                         (= (:credential-id auth) (:credential-id r))
+                         (str (:credential-id auth) " vs " (:credential-id r)))
+                 (check! "the COSE P-256 key decodes to a 65-byte uncompressed point"
+                         (= 65 (aget (edge/b64url->bytes
+                                      (-> (:public-key-b64 r)
+                                          (.replace (js/RegExp. "\\+" "g") "-")
+                                          (.replace (js/RegExp. "/" "g") "_")
+                                          (.replace (js/RegExp. "=+$" "") "")))
+                                     "length")))
+                 ;; a registration whose clientData names a different origin
+                 (edge/verify-registration! config
+                                            (assoc (register! {:origin "https://evil.example"
+                                                               :challenge challenge})
+                                                   :challenge challenge))))
+        (.then (fn [r] (expect-deny "registration for a different origin is refused" r)
+                 (edge/verify-registration! config
+                                            (assoc (register! {:origin origin :challenge challenge})
+                                                   :challenge "a-different-challenge"))))
+        (.then (fn [r] (expect-deny "registration against a challenge we did not issue is refused" r)
+                 (edge/verify-registration! config
+                                            (assoc (register! {:origin origin :challenge challenge
+                                                               :user-present? false})
+                                                   :challenge challenge))))
+        (.then (fn [r] (expect-deny "registration with the user-present flag clear is refused" r)
+                 (assert! {:origin origin :challenge challenge :sign-count 1})))
+        (.then (fn [a]
+                 (edge/verify-authentication!
+                  config (assoc a :challenge challenge
+                                :public-key-b64 (:public-key-b64 (:registration @state))))))
+        (.then (fn [r]
+                 (check! "a real assertion verifies against the stored key" (true? (:ok r)) (pr-str r))
+                 (check! "the sign count is reported for the caller's clone check"
+                         (= 1 (:sign-count r)))
+                 (assert! {:origin origin :challenge challenge :tamper-signature? true})))
+        (.then (fn [a]
+                 (edge/verify-authentication!
+                  config (assoc a :challenge challenge
+                                :public-key-b64 (:public-key-b64 (:registration @state))))))
+        (.then (fn [r] (expect-deny "a tampered signature is refused" r)
+                 (assert! {:origin "https://evil.example" :challenge challenge})))
+        (.then (fn [a]
+                 (edge/verify-authentication!
+                  config (assoc a :challenge challenge
+                                :public-key-b64 (:public-key-b64 (:registration @state))))))
+        (.then (fn [r] (expect-deny "an assertion made for a different origin is refused" r)
+                 (assert! {:origin origin :challenge challenge :user-present? false})))
+        (.then (fn [a]
+                 (edge/verify-authentication!
+                  config (assoc a :challenge challenge
+                                :public-key-b64 (:public-key-b64 (:registration @state))))))
+        (.then (fn [r]
+                 ;; The signature is VALID here -- only the flag byte differs.
+                 ;; Verifying the signature alone would accept this.
+                 (expect-deny "an assertion with the user-present flag clear is refused" r)
+                 (.then (js/crypto.subtle.digest "SHA-256" (.encode (js/TextEncoder.) "other.example"))
+                        (fn [h] (assert! {:origin origin :challenge challenge
+                                          :rp-hash (js/Uint8Array. h)})))))
+        (.then (fn [a]
+                 (edge/verify-authentication!
+                  config (assoc a :challenge challenge
+                                :public-key-b64 (:public-key-b64 (:registration @state))))))
+        (.then (fn [r]
+                 (expect-deny "an assertion whose authData names another RP is refused" r)
+                 (assert! {:origin origin :challenge "some-other-challenge"})))
+        (.then (fn [a]
+                 (edge/verify-authentication!
+                  config (assoc a :challenge challenge
+                                :public-key-b64 (:public-key-b64 (:registration @state))))))
+        (.then (fn [r]
+                 (expect-deny "an assertion for a challenge we did not issue is refused" r)
+                 (assert! {:origin origin :challenge challenge :client-data-type "webauthn.create"})))
+        (.then (fn [a]
+                 (edge/verify-authentication!
+                  config (assoc a :challenge challenge
+                                :public-key-b64 (:public-key-b64 (:registration @state))))))
+        (.then (fn [r]
+                 (expect-deny "a registration ceremony replayed as a login is refused" r)
+                 (edge/verify-authentication!
+                  config {:client-data-json-b64url "!!!not-base64url!!!"
+                          :authenticator-data-b64url "AA" :signature-b64url "AA"
+                          :challenge challenge :public-key-b64 "AA"})))
+        (.then (fn [r]
+                 (check! "malformed input is a 400, never an internal error"
+                         (and (false? (:ok r)) (= 400 (:status r))) (pr-str r))))
+        (.then (fn [_]
+                 (check! "sign-count: a counter-less authenticator (0 -> 0) is accepted"
+                         (edge/sign-count-ok? 0 0))
+                 (check! "sign-count: a strictly increasing count is accepted"
+                         (edge/sign-count-ok? 4 5))
+                 (check! "sign-count: a repeated count is a clone signal"
+                         (not (edge/sign-count-ok? 5 5)))
+                 (check! "sign-count: a decreasing count is a clone signal"
+                         (not (edge/sign-count-ok? 5 4))))))))
+
+(-> (va/create! rp-id)
+    (.then run)
+    (.then (fn [_]
+             (if (seq @failures)
+               (do (println "\nFAILED:" (count @failures) (pr-str @failures))
+                   (set! (.-exitCode js/process) 1))
+               (println "\nwebauthn edge ceremony smoke: all checks passed"))))
+    (.catch (fn [e] (println "threw:" e) (set! (.-exitCode js/process) 1))))
