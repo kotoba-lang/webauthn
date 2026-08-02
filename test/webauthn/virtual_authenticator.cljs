@@ -118,10 +118,13 @@
 
 (defn- auth-data
   "rpIdHash | flags | signCount [| aaguid | credIdLen | credId | coseKey]"
-  [rp-id-hash {:keys [user-present? user-verified? sign-count attested]}]
+  [rp-id-hash {:keys [user-present? user-verified? backup-eligible? backed-up?
+                      sign-count attested]}]
   (let [flags (cond-> 0
                 user-present? (bit-or 0x01)
                 user-verified? (bit-or 0x04)
+                backup-eligible? (bit-or 0x08)
+                backed-up? (bit-or 0x10)
                 attested (bit-or 0x40))
         head (cat-arrays [rp-id-hash
                           #js [flags]
@@ -161,10 +164,14 @@
                    :public-key pub
 
                    :register!
-                   (fn [{:keys [origin challenge sign-count user-present? rp-hash]
-                         :or {sign-count 0 user-present? true}}]
+                   (fn [{:keys [origin challenge sign-count user-present? user-verified?
+                                backup-eligible? backed-up? rp-hash]
+                         :or {sign-count 0 user-present? true user-verified? true}}]
                      (let [ad (auth-data (or rp-hash rp-id-hash)
-                                         {:user-present? user-present? :user-verified? true
+                                         {:user-present? user-present?
+                                          :user-verified? user-verified?
+                                          :backup-eligible? backup-eligible?
+                                          :backed-up? backed-up?
                                           :sign-count sign-count
                                           :attested {:aaguid aaguid
                                                      :credential-id credential-id
@@ -174,13 +181,17 @@
                         (b64url (cbor-map [["fmt" "none"] ["attStmt" []] ["authData" ad]]))}))
 
                    :assert!
-                   (fn [{:keys [origin challenge sign-count user-present? rp-hash tamper-signature?
+                   (fn [{:keys [origin challenge sign-count user-present? user-verified?
+                                backup-eligible? backed-up? rp-hash tamper-signature?
                                 client-data-type]
-                         :or {sign-count 1 user-present? true}}]
+                         :or {sign-count 1 user-present? true user-verified? true}}]
                      (let [cd-b64url (client-data (or client-data-type "webauthn.get") origin challenge)
                            cd-bytes (edge/b64url->bytes cd-b64url)
                            ad (auth-data (or rp-hash rp-id-hash)
-                                         {:user-present? user-present? :user-verified? true
+                                         {:user-present? user-present?
+                                          :user-verified? user-verified?
+                                          :backup-eligible? backup-eligible?
+                                          :backed-up? backed-up?
                                           :sign-count sign-count})]
                        (-> (sha256 cd-bytes)
                            (.then (fn [cd-hash]
