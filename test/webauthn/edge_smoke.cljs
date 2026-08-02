@@ -125,7 +125,72 @@
                  (check! "sign-count: a repeated count is a clone signal"
                          (not (edge/sign-count-ok? 5 5)))
                  (check! "sign-count: a decreasing count is a clone signal"
-                         (not (edge/sign-count-ok? 5 4))))))))
+                         (not (edge/sign-count-ok? 5 4)))))
+
+        ;; ── user verification, the default ──────────────────────────────────
+        ;;
+        ;; Every check above ran with UV set, because that is what a ceremony
+        ;; under `userVerification: "required"` produces. These are the ones
+        ;; that matter: the signature is genuine and everything else is in
+        ;; order, and only the UV bit differs.
+        (.then (fn [_] (edge/verify-registration!
+                        config (assoc (register! {:origin origin :challenge challenge
+                                                  :user-verified? false})
+                                      :challenge challenge))))
+        (.then (fn [r]
+                 (expect-deny "registration without user verification is refused by default" r)
+                 (assert! {:origin origin :challenge challenge :user-verified? false})))
+        (.then (fn [a]
+                 (edge/verify-authentication!
+                  config (assoc a :challenge challenge
+                                :public-key-b64 (:public-key-b64 (:registration @state))))))
+        (.then (fn [r]
+                 (expect-deny "an assertion without user verification is refused by default" r)
+                 (assert! {:origin origin :challenge challenge :user-verified? false})))
+
+        ;; An unrecognised policy value must NOT read as "no policy". Only the
+        ;; exact keyword :preferred opts out; a typo has to over-refuse.
+        (.then (fn [a]
+                 (edge/verify-authentication!
+                  (assoc config :user-verification :prefered) ;; deliberate typo
+                  (assoc a :challenge challenge
+                         :public-key-b64 (:public-key-b64 (:registration @state))))))
+        (.then (fn [r]
+                 (expect-deny "a misspelt user-verification policy still refuses UV=0" r)
+                 (assert! {:origin origin :challenge challenge :user-verified? false})))
+        (.then (fn [a]
+                 (edge/verify-authentication!
+                  (assoc config :user-verification :preferred)
+                  (assoc a :challenge challenge
+                         :public-key-b64 (:public-key-b64 (:registration @state))))))
+        (.then (fn [r]
+                 (check! "an explicit :preferred lane accepts UV=0" (true? (:ok r)) (pr-str r))
+                 (check! "…and says so, so the caller can grade the session"
+                         (false? (:user-verified? r)) (pr-str r))
+
+                 ;; ── backup eligibility / backup state ────────────────────
+                 (assert! {:origin origin :challenge challenge
+                           :backup-eligible? true :backed-up? true})))
+        (.then (fn [a]
+                 (edge/verify-authentication!
+                  config (assoc a :challenge challenge
+                                :public-key-b64 (:public-key-b64 (:registration @state))))))
+        (.then (fn [r]
+                 (check! "a synced credential reports BE and BS"
+                         (and (true? (:ok r)) (true? (:backup-eligible? r)) (true? (:backed-up? r)))
+                         (pr-str r))
+                 (assert! {:origin origin :challenge challenge :backup-eligible? true})))
+        (.then (fn [a]
+                 (edge/verify-authentication!
+                  config (assoc a :challenge challenge
+                                :public-key-b64 (:public-key-b64 (:registration @state))))))
+        (.then (fn [r]
+                 ;; Sync turned off: eligible, no longer backed up. Reported,
+                 ;; never refused — a device-bound credential is what an
+                 ;; administrator carrying two hardware keys has.
+                 (check! "a credential that is eligible but not backed up is accepted and reported"
+                         (and (true? (:ok r)) (true? (:backup-eligible? r)) (false? (:backed-up? r)))
+                         (pr-str r)))))))
 
 (-> (va/create! rp-id)
     (.then run)

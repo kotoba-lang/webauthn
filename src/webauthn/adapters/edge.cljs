@@ -25,7 +25,8 @@
   Registration (`verify-registration!`):
     - `clientData.type` is `webauthn.create`, `origin` matches exactly, and
       `challenge` equals the one the caller issued.
-    - `authData` carries attested credential data and the user-present flag.
+    - `authData` carries attested credential data, the user-present flag, and
+      the user-VERIFIED flag (see below).
     - `authData`'s `rpIdHash` equals SHA-256(rp-id) — otherwise a credential
       created for another RP could be presented here.
     - the credential public key is COSE EC2 / P-256, returned as a raw
@@ -33,10 +34,31 @@
 
   Authentication (`verify-authentication!`):
     - the same clientData checks, with type `webauthn.get`.
-    - `authData` is PARSED and its user-present flag and `rpIdHash` checked.
-      Verifying only the signature would accept an assertion with UP=0 (no
-      human touched the authenticator) or one made for a different RP; the
-      signature is over those bytes but says nothing about their contents.
+    - `authData` is PARSED and its user-present, user-verified and `rpIdHash`
+      fields checked. Verifying only the signature would accept an assertion
+      with UP=0 (no human touched the authenticator) or one made for a
+      different RP; the signature is over those bytes but says nothing about
+      their contents.
+
+  ## User verification is required unless the caller says otherwise
+
+  `config` takes `:user-verification`, and the default is `:required`.
+
+  UP and UV are different facts. UP=1 says an authenticator was touched. UV=1
+  says the human was VERIFIED — a PIN, a biometric, a device unlock. An
+  assertion with UP=1 and UV=0 is what a stolen always-on security key
+  produces, and its signature verifies perfectly. Returning `:user-verified?`
+  for the caller to check, which is what this namespace used to do, is the
+  shape of check that gets forgotten exactly once and then never noticed,
+  because everything keeps working.
+
+  So the default is fail-closed: `:required` refuses UV=0, and anything other
+  than the explicit value `:preferred` is treated as `:required`. A misspelt
+  policy therefore over-refuses rather than silently disabling the check —
+  the failure mode a policy key exists to prevent. A caller that genuinely
+  needs a lower-assurance lane must ask for it in writing, and should keep it
+  separate from sessions that can reach payments, credential management or
+  administration.
     - the ECDSA P-256 signature over `authData || SHA-256(clientDataJSON)`
       verifies against the stored public key. WebAuthn signatures are
       DER-encoded and `crypto.subtle` wants raw IEEE-P1363, so `webauthn.der`
@@ -156,6 +178,18 @@
            (aget bytes (+ offset 3)))
    0))
 
+(defn user-verification-refusal
+  "The refusal an unverified ceremony earns, or nil.
+
+  `:preferred` — and ONLY the exact value `:preferred` — opts out. A typo, a
+  string instead of a keyword, a nil that came from a missing config key: all
+  of those land on `:required`, because the alternative is a policy that
+  disables itself when it is written down wrong."
+  [{:keys [user-verification]} parsed status]
+  (when (and (not= :preferred user-verification)
+             (not (:user-verified? parsed)))
+    (err status "user-verification flag not set")))
+
 (defn parse-authenticator-data
   "Public so a caller can inspect an assertion it verified. Every read is
   bounds-checked against the declared and available lengths before it is
@@ -167,6 +201,15 @@
         base {:rp-id-hash (.slice bytes 0 32)
               :user-present? (not (zero? (bit-and flags 0x01)))
               :user-verified? (not (zero? (bit-and flags 0x04)))
+              ;; Backup Eligibility and Backup State (WebAuthn L3 §6.1). BE=0
+              ;; means this credential can never leave the authenticator it was
+              ;; born on, so an account holding only such credentials is one
+              ;; lost device away from unreachable. Reported, never judged
+              ;; here: whether that is acceptable is a policy the caller owns,
+              ;; and refusing BE=0 would refuse hardware security keys, which
+              ;; are the strongest thing a user can hold.
+              :backup-eligible? (not (zero? (bit-and flags 0x08)))
+              :backed-up? (not (zero? (bit-and flags 0x10)))
               :sign-count (read-uint32-be bytes 33)}]
     (if (zero? (bit-and flags 0x40))
       (assoc base :has-attested-cred? false)
@@ -218,7 +261,7 @@
     {:ok true :credential-id <b64url> :public-key-b64 <base64 65-byte P-256>
      :sign-count n :user-verified? bool :aaguid-b64 <base64>}
   or {:ok false :status n :error s}. Never rejects."
-  [{:keys [rp-id origin]} {:keys [client-data-json-b64url attestation-object-b64url challenge]}]
+  [{:keys [rp-id origin] :as config} {:keys [client-data-json-b64url attestation-object-b64url challenge]}]
   (-> (js/Promise.resolve nil)
       (.then
        (fn []
@@ -227,13 +270,21 @@
            (if-not (:ok cd)
              cd
              (let [att (cbor/decode (b64url->bytes attestation-object-b64url))
-                   parsed (parse-authenticator-data (aget att "authData"))]
+                   parsed (parse-authenticator-data (aget att "authData"))
+                   ;; Refused at ENROLMENT as well as at login, because a
+                   ;; credential registered without user verification can never
+                   ;; produce a verified assertion afterwards. Admitting one
+                   ;; mints an account that enrols cleanly and can then never
+                   ;; sign in.
+                   uv-refusal (user-verification-refusal config parsed 400)]
                (cond
                  (not (:has-attested-cred? parsed))
                  (err 400 "attestationObject has no attested credential data")
 
                  (not (:user-present? parsed))
                  (err 400 "user-present flag not set")
+
+                 uv-refusal uv-refusal
 
                  :else
                  (-> (sha256 (.encode (js/TextEncoder.) rp-id))
@@ -249,23 +300,29 @@
                                                               (cbor/decode (:cose-key-bytes parsed))))
                                  :aaguid-b64 (bytes->b64 (:aaguid parsed))
                                  :sign-count (:sign-count parsed)
-                                 :user-verified? (:user-verified? parsed)}))))))))))
+                                 :user-verified? (:user-verified? parsed)
+                                 :backup-eligible? (:backup-eligible? parsed)
+                                 :backed-up? (:backed-up? parsed)}))))))))))
       (.catch (fn [e] (err 400 (str "malformed registration ceremony: " (aget e "message")))))))
 
 (defn verify-authentication!
   "Verify a `navigator.credentials.get()` result against a stored credential.
 
-  `config`  {:rp-id :origin}
+  `config`  {:rp-id :origin :user-verification}
   `payload` {:client-data-json-b64url :authenticator-data-b64url
              :signature-b64url :challenge :public-key-b64}
 
-  Promise of {:ok true :sign-count n :user-verified? bool} or
-  {:ok false :status n :error s}. Never rejects.
+  Promise of {:ok true :sign-count n :user-verified? bool :backup-eligible?
+  bool :backed-up? bool} or {:ok false :status n :error s}. Never rejects.
 
   `:sign-count` is returned, not judged: clone detection (L2 §7.2 step 19)
   compares it against a stored baseline and then persists the new value, which
-  only the caller can do."
-  [{:keys [rp-id origin]}
+  only the caller can do. The backup flags are likewise returned rather than
+  judged, but they must be re-read on EVERY login and not only at enrolment:
+  backup state moves when a user changes provider or turns sync off, so a
+  value written once describes a recovery posture the account may no longer
+  have."
+  [{:keys [rp-id origin] :as config}
    {:keys [client-data-json-b64url authenticator-data-b64url signature-b64url
            challenge public-key-b64]}]
   (-> (js/Promise.resolve nil)
@@ -278,9 +335,12 @@
              (let [auth-data-bytes (b64url->bytes authenticator-data-b64url)
                    parsed (parse-authenticator-data auth-data-bytes)
                    raw-sig (der/raw (b64url->bytes signature-b64url))
-                   pubkey-bytes (b64->bytes public-key-b64)]
-               (if-not (:user-present? parsed)
-                 (err 401 "user-present flag not set")
+                   pubkey-bytes (b64->bytes public-key-b64)
+                   uv-refusal (user-verification-refusal config parsed 401)]
+               (cond
+                 (not (:user-present? parsed)) (err 401 "user-present flag not set")
+                 uv-refusal uv-refusal
+                 :else
                  (-> (sha256 (.encode (js/TextEncoder.) rp-id))
                      (.then (fn [rp-hash]
                               (when-not (bytes= rp-hash (:rp-id-hash parsed))
@@ -299,7 +359,9 @@
                                 (err 401 "signature verification failed")
                                 {:ok true
                                  :sign-count (:sign-count parsed)
-                                 :user-verified? (:user-verified? parsed)}))))))))))
+                                 :user-verified? (:user-verified? parsed)
+                                 :backup-eligible? (:backup-eligible? parsed)
+                                 :backed-up? (:backed-up? parsed)}))))))))))
       (.catch (fn [e]
                 (if-let [deny (:authn/deny (ex-data e))]
                   (err 401 deny)
