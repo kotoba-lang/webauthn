@@ -1,0 +1,18 @@
+#!/usr/bin/env nbb
+;; nbb --classpath src:test run-tests.cljs
+;;
+;; 可搬な `.cljc` のテストを ClojureScript でも回す。`webauthn.assurance` は
+;; Cloudflare Worker（cloud-itonami）と JVM（cloud-itonami-app）の両方から
+;; 使われるので、JVM で通ることは片方の証拠にしかならない。
+(ns run-tests
+  (:require [cljs.test :as t]
+            [webauthn.assurance-test]
+            [webauthn.core-test]))
+
+(defmethod t/report [:cljs.test/default :end-run-tests] [m]
+  (println)
+  (println (str "Ran " (:test m) " tests, " (:pass m) " assertions passed, "
+                (:fail m) " failures, " (:error m) " errors."))
+  (when-not (t/successful? m) (js/process.exit 1)))
+
+(t/run-tests 'webauthn.assurance-test 'webauthn.core-test)
