@@ -7,7 +7,9 @@
 (ns run-tests
   (:require [cljs.test :as t]
             [webauthn.assurance-test]
-            [webauthn.core-test]))
+            [webauthn.core-test]
+            [webauthn.adapters.ceremony-test]
+            [webauthn.adapters.production-test]))
 
 (defmethod t/report [:cljs.test/default :end-run-tests] [m]
   (println)
@@ -15,4 +17,5 @@
                 (:fail m) " failures, " (:error m) " errors."))
   (when-not (t/successful? m) (js/process.exit 1)))
 
-(t/run-tests 'webauthn.assurance-test 'webauthn.core-test)
+(t/run-tests 'webauthn.assurance-test 'webauthn.core-test
+             'webauthn.adapters.ceremony-test 'webauthn.adapters.production-test)
