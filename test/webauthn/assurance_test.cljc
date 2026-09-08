@@ -7,7 +7,7 @@
   platform fail to reach the level that a signed AAGUID reaches**. If those two
   graded the same, the whole distinction would be decorative and a browser's
   virtual authenticator would clear the same bar as the Secure Enclave."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [clojure.test :refer [deftest is testing]]
             [webauthn.assurance :as ca]))
 
@@ -38,7 +38,7 @@
   (testing "and case does not matter -- an uppercase AAGUID is the same device"
     (is (= :platform-attested
            (:passkey/assurance
-            (ca/assurance (cred :aaguid (str/upper-case touch-id-aaguid)
+            (ca/assurance (cred :aaguid (str/upper touch-id-aaguid)
                                 :attachment "platform")))))))
 
 (deftest the-clients-own-word-is-recorded-and-ranked-below-anything-signed

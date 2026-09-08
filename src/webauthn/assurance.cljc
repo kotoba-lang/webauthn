@@ -51,7 +51,7 @@
 
   Moved here 2026-08-07 rather than into a new repo: \"what a WebAuthn
   credential proves\" is this repository's subject."
-  (:require [clojure.string :as str]))
+  (:require [kotoba.lang.text :as str]))
 
 (def schema "webauthn.assurance.v1")
 
@@ -98,7 +98,7 @@
          (>= (level-rank level) f))))
 
 (defn- known-aaguid? [aaguid]
-  (contains? platform-aaguids (some-> aaguid str/lower-case)))
+  (contains? platform-aaguids (some-> aaguid str/lower)))
 
 (defn assurance
   "Grade one stored credential. PURE.
@@ -115,13 +115,13 @@
     (cond
       (true? attestation-trusted?)
       {:passkey/assurance :hardware-attested
-       :passkey/aaguid-label (get platform-aaguids (some-> aaguid str/lower-case))
+       :passkey/aaguid-label (get platform-aaguids (some-> aaguid str/lower))
        :passkey/basis (str "attestation chain verified against a configured root"
                            (when attestation-type (str " (" attestation-type ")")))}
 
       (known-aaguid? aaguid)
       {:passkey/assurance :platform-attested
-       :passkey/aaguid-label (get platform-aaguids (str/lower-case aaguid))
+       :passkey/aaguid-label (get platform-aaguids (str/lower aaguid))
        :passkey/basis "AAGUID inside signed authenticator data matches a known hardware-backed platform authenticator"}
 
       platform?
