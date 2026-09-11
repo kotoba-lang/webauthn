@@ -1,8 +1,8 @@
 ;; nbb smoke for webauthn.adapters.edge, driven by a virtual authenticator that
-;; really signs. `clojure -M:test` cannot reach this namespace at all -- it is
+;; really signs. `kbb -M:test` cannot reach this namespace at all -- it is
 ;; CLJS-only (js/crypto.subtle, js/Uint8Array, js/TextDecoder).
 ;;
-;;   nbb --classpath "src:test:<cacao>/src" test/webauthn/edge_smoke.cljk
+;;   kbb --backend sci --classpath "src:test:<cacao>/src" test/webauthn/edge_smoke.cljk
 ;;
 ;; Requires Node >= 20. Exits nonzero on any failure.
 (ns webauthn.edge-smoke
