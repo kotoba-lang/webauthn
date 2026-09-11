@@ -5,7 +5,7 @@
  ;; reasons and is not CACAO-specific; depending on it beats a fifth
  ;; hand-rolled CBOR decoder in this workspace. Only the CLJS edge adapter
  ;; pulls it in -- the portable model/ports/validation namespaces have no
- ;; dependency at all, and `clojure -M:test` never loads it.
+ ;; dependency at all, and `kbb -M:test` never loads it.
  :deps {
         ;; kotoba.lang.text, not clojure.string. Pinned as an explicit floor:
         ;; tools.deps takes the NEWEST sha it is shown, so without a floor here

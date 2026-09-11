@@ -89,6 +89,6 @@ Verified against `webauthn.virtual-authenticator` — a P-256 authenticator that
 really signs, including ceremonies that misbehave on purpose:
 
 ```bash
-nbb --classpath "src:test:../org-chainagnostic-cacao/src" test/webauthn/edge_smoke.cljk
+kbb --backend sci --classpath "src:test:../org-chainagnostic-cacao/src" test/webauthn/edge_smoke.cljk
 ```
 
