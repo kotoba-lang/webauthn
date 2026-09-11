@@ -1,5 +1,5 @@
 #!/usr/bin/env nbb
-;; nbb --classpath src:test run-tests.cljs
+;; nbb --classpath src:test run-tests.cljk
 ;;
 ;; 可搬な `.cljc` のテストを ClojureScript でも回す。`webauthn.assurance` は
 ;; Cloudflare Worker（cloud-itonami）と JVM（cloud-itonami-app）の両方から

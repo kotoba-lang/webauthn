@@ -2,7 +2,7 @@
 ;; really signs. `clojure -M:test` cannot reach this namespace at all -- it is
 ;; CLJS-only (js/crypto.subtle, js/Uint8Array, js/TextDecoder).
 ;;
-;;   nbb --classpath "src:test:<cacao>/src" test/webauthn/edge_smoke.cljs
+;;   nbb --classpath "src:test:<cacao>/src" test/webauthn/edge_smoke.cljk
 ;;
 ;; Requires Node >= 20. Exits nonzero on any failure.
 (ns webauthn.edge-smoke
