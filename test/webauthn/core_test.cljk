@@ -1,5 +1,5 @@
 (ns webauthn.core-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [kotoba.test :refer [deftest is]]
             [webauthn.core :as c]
             [webauthn.model :as m]
             [webauthn.ports :as p]))

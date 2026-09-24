@@ -1,5 +1,5 @@
 (ns webauthn.adapters.ceremony-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [kotoba.test :refer [deftest is]]
             [webauthn.adapters.ceremony :as a]
             [webauthn.core :as c]
             [webauthn.model :as m]))
