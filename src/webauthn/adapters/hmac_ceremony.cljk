@@ -1,12 +1,11 @@
 (ns webauthn.adapters.hmac-ceremony
-  (:require [webauthn.adapters.ceremony :as ceremony])
+  (:require [kotoba.bytes :as kbytes] [webauthn.adapters.ceremony :as ceremony])
   (:import [java.nio.charset StandardCharsets]
-           [java.util Base64]
            [javax.crypto Mac]
            [javax.crypto.spec SecretKeySpec]))
 
 (defn- b64url [bytes]
-  (.encodeToString (.withoutPadding (Base64/getUrlEncoder)) bytes))
+  (kbytes/base64url-encode bytes {:pad? false}))
 
 (defn signature [secret challenge credential-id]
   (let [mac (doto (Mac/getInstance "HmacSHA256")
