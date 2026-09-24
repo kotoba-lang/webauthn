@@ -51,7 +51,7 @@
 
   Moved here 2026-08-07 rather than into a new repo: \"what a WebAuthn
   credential proves\" is this repository's subject."
-  (:require [kotoba.lang.text :as str]))
+  (:require [kotoba.lang.coll :as kcoll] [kotoba.lang.text :as str]))
 
 (def schema "webauthn.assurance.v1")
 
@@ -81,7 +81,7 @@
   [:unknown :platform-claimed :platform-attested :hardware-attested])
 
 (defn level-rank [level]
-  (let [i (.indexOf ^java.util.List levels level)]
+  (let [i (kcoll/index-of levels level)]
     (if (neg? i) 0 i)))
 
 (defn at-least?
@@ -93,7 +93,7 @@
   silently disables a gate is the failure mode this whole namespace exists to
   prevent. Fail closed in both directions."
   [level floor]
-  (let [f (.indexOf ^java.util.List levels floor)]
+  (let [f (kcoll/index-of levels floor)]
     (and (nat-int? f)
          (>= (level-rank level) f))))
 

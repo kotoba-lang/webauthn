@@ -1,6 +1,6 @@
 (ns webauthn.adapters.hmac-ceremony
   (:require [kotoba.bytes :as kbytes] [webauthn.adapters.ceremony :as ceremony])
-  (:import [java.nio.charset StandardCharsets]
+  (:import
            [javax.crypto Mac]
            [javax.crypto.spec SecretKeySpec]))
 
@@ -9,9 +9,9 @@
 
 (defn signature [secret challenge credential-id]
   (let [mac (doto (Mac/getInstance "HmacSHA256")
-              (.init (SecretKeySpec. (.getBytes secret StandardCharsets/UTF_8) "HmacSHA256")))
+              (.init (SecretKeySpec. (kbytes/utf8-bytes secret) "HmacSHA256")))
         data (str challenge ":" credential-id)]
-    (b64url (.doFinal mac (.getBytes data StandardCharsets/UTF_8)))))
+    (b64url (.doFinal mac (kbytes/utf8-bytes data)))))
 
 (defn verifier [secret opts]
   (reify ceremony/ICeremonyVerifier
