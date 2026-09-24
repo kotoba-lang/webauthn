@@ -8,7 +8,7 @@
   graded the same, the whole distinction would be decorative and a browser's
   virtual authenticator would clear the same bar as the Secure Enclave."
   (:require [kotoba.lang.text :as str]
-            [clojure.test :refer [deftest is testing]]
+            [kotoba.test :refer [deftest is testing]]
             [webauthn.assurance :as ca]))
 
 (def touch-id-aaguid "adce0002-35bc-c60a-648b-0b25f1f05503")

@@ -1,5 +1,5 @@
 (ns webauthn.adapters.hmac-ceremony-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [kotoba.test :refer [deftest is]]
             [webauthn.adapters.ceremony :as ceremony]
             [webauthn.adapters.hmac-ceremony :as hmac]
             [webauthn.core :as c]
