@@ -4,8 +4,9 @@
   ;; （32x32 の積は i64 に溢れるため lane 分解。carry は i64-shift-right 16、合成は i64-shift-left 16）。
   ;; mod-p / Jacobian 点演算 / verify は後続。KAT: check-u256 / check-u256-mul。
   (:schemas {:crypto/u256 [:record :crypto/u256 [[:l0 :i64] [:l1 :i64] [:l2 :i64] [:l3 :i64] [:l4 :i64] [:l5 :i64] [:l6 :i64] [:l7 :i64]]]
+             :crypto/jpoint [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]]
              :crypto/u512 [:record :crypto/u512 [[:w0 :i64] [:w1 :i64] [:w2 :i64] [:w3 :i64] [:w4 :i64] [:w5 :i64] [:w6 :i64] [:w7 :i64] [:w8 :i64] [:w9 :i64] [:w10 :i64] [:w11 :i64] [:w12 :i64] [:w13 :i64] [:w14 :i64] [:w15 :i64]]]})
-  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce check-u256 check-u256-mul check-reduce]))
+  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce jacobian-double jacobian-add check-u256 check-u256-mul check-reduce check-jacobian]))
 
 (def mask32 4294967295)
 (def carry-bit 4294967296)
@@ -506,3 +507,99 @@
           v5 (if (= (limb r5 7) (limb e5 7)) (if (= (limb r5 6) (limb e5 6)) (if (= (limb r5 5) (limb e5 5)) (if (= (limb r5 4) (limb e5 4)) (if (= (limb r5 3) (limb e5 3)) (if (= (limb r5 2) (limb e5 2)) (if (= (limb r5 1) (limb e5 1)) (if (= (limb r5 0) (limb e5 0)) 0 600) 601) 602) 603) 604) 605) 606) 607)
           ]
       (if (= v0 0) (if (= v1 0) (if (= v2 0) (if (= v3 0) (if (= v4 0) v5 v4) v3) v2) v1) v0))))
+
+
+;; ---- mod-p 演算 + Jacobian 点演算（JUN-98 (b)）----
+;; mp-add は carry を落とさないよう u512 経由。点公式は dbl-2009-l（a=-3 折り込み）
+;; と add-2007-bl。無限遠点は未処理（verify は r,s != 0 を先に見る前提）。
+(defn- gx [] [:ref :crypto/u256]
+  (mk 3633889942 4104206661 770388896 1996717441 1671708914 4173129445 3777774151 1796723186))
+
+(defn- gy [] [:ref :crypto/u256]
+  (mk 935285237 3417718888 1798397646 734933847 2081398294 2397563722 4263149467 1340293858))
+
+(defn- one256 [] [:ref :crypto/u256]
+  (mk 1 0 0 0 0 0 0 0))
+
+(defn- mp-add [x [:ref :crypto/u256] y [:ref :crypto/u256]] [:ref :crypto/u256]
+  (u512-reduce (u512-add (place0 x) (place0 y))))
+
+(defn- mp-sub [x [:ref :crypto/u256] y [:ref :crypto/u256]] [:ref :crypto/u256]
+  (if (= (u256-cmp x y) -1)
+    (u256-sub (u256-add x (p-limbs)) y)
+    (u256-sub x y)))
+
+(defn- mp-mul [x [:ref :crypto/u256] y [:ref :crypto/u256]] [:ref :crypto/u256]
+  (u512-reduce (u256-mul x y)))
+
+(defn- mp-double [x [:ref :crypto/u256]] [:ref :crypto/u256]
+  (mp-add x x))
+
+(defn jacobian-double [x [:ref :crypto/u256] y [:ref :crypto/u256] z [:ref :crypto/u256]] [:ref :crypto/jpoint]
+  (let [a (mp-mul x x)
+        b (mp-mul y y)
+        c (mp-mul b b)
+        xb (mp-add x b)
+        xb2 (mp-mul xb xb)
+        d0 (mp-sub xb2 a)
+        d1 (mp-sub d0 c)
+        d (mp-double d1)
+        zs (mp-mul z z)
+        zq (mp-mul zs zs)
+        e0 (mp-sub a zq)
+        e1 (mp-add e0 (mp-add e0 e0))
+        f (mp-mul e1 e1)
+        x3 (mp-sub f (mp-double d))
+        dc (mp-sub d x3)
+        yd (mp-mul e1 dc)
+        c2 (mp-double c)
+        c4 (mp-double c2)
+        c8 (mp-double c4)
+        y3 (mp-sub yd c8)
+        z3 (mp-double (mp-mul y z))]
+    (record-new [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]] x3 y3 z3)))
+
+(defn jacobian-add [x1 [:ref :crypto/u256] y1 [:ref :crypto/u256] z1 [:ref :crypto/u256]
+                    x2 [:ref :crypto/u256] y2 [:ref :crypto/u256] z2 [:ref :crypto/u256]] [:ref :crypto/jpoint]
+  (let [z1z1 (mp-mul z1 z1)
+        z2z2 (mp-mul z2 z2)
+        u1 (mp-mul x1 z2z2)
+        u2 (mp-mul x2 z1z1)
+        s1 (mp-mul (mp-mul y1 z2) z2z2)
+        s2 (mp-mul (mp-mul y2 z1) z1z1)
+        h (mp-sub u2 u1)
+        twoh (mp-double h)
+        i (mp-mul twoh twoh)
+        j (mp-mul h i)
+        s2s1 (mp-sub s2 s1)
+        r (mp-double s2s1)
+        v (mp-mul u1 i)
+        rr (mp-mul r r)
+        x3a (mp-sub rr j)
+        x3 (mp-sub x3a (mp-double v))
+        vx3 (mp-sub v x3)
+        yd (mp-mul r vx3)
+        sj (mp-mul s1 j)
+        y3 (mp-sub yd (mp-double sj))
+        z1z2 (mp-add z1 z2)
+        z1z2s (mp-mul z1z2 z1z2)
+        z3a (mp-sub z1z2s z1z1)
+        z3b (mp-sub z3a z2z2)
+        z3 (mp-mul z3b h)]
+    (record-new [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]] x3 y3 z3)))
+
+(defn check-jacobian [] :i64
+  (let [gx (gx)
+        gy (gy)
+        one (one256)
+        p2 (jacobian-double gx gy one)
+        e2x (mk 2446771983 511542403 1331813839 2152415783 3707559491 1460567378 2899424685 2593623897)
+        e2y (mk 2429744593 4250517041 2288421840 3883910243 3845418335 87261752 2138598137 1093044318)
+        e2z (mk 1870570474 2540470480 3596795293 1469867694 4162796588 500160148 4231331639 2680587717)
+        p3 (jacobian-add gx gy one (record-get p2 :x) (record-get p2 :y) (record-get p2 :z))
+        e3x (mk 2957881984 1278172344 711836164 452302436 2918461796 1555023603 583019129 992088323)
+        e3y (mk 3970758985 857824999 881122767 1512118055 2217861184 4030249113 1661711230 4196155631)
+        e3z (mk 3816847858 60346435 1763239260 3199476819 3749986120 4157236765 3116744997 1169189208)]
+    (let [v2 (if (= (u256-cmp (record-get p2 :x) e2x) 0) (if (= (u256-cmp (record-get p2 :y) e2y) 0) (if (= (u256-cmp (record-get p2 :z) e2z) 0) 0 102) 101) 100)
+          v3 (if (= (u256-cmp (record-get p3 :x) e3x) 0) (if (= (u256-cmp (record-get p3 :y) e3y) 0) (if (= (u256-cmp (record-get p3 :z) e3z) 0) 0 202) 201) 200)]
+      (if (= v2 0) v3 v2))))
