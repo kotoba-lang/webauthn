@@ -720,7 +720,9 @@
   (mk512 0 0 0 0 0 0 0 0 (limb x 0) (limb x 1) (limb x 2) (limb x 3) (limb x 4) (limb x 5) (limb x 6) (limb x 7)))
 
 (defn- sub-n512-if-nonneg [x [:ref :crypto/u512]] [:ref :crypto/u512]
-  (if (= (u256-cmp (hi256 x) (zero256)) -1)
+  ;; hi != 0 のときだけ n を引く（hi == 0 で引くと負になり mod 2^512 で壊れる。
+  ;; 実測した modn KAT の word-0 不一致の実因: 条件が逆で常に引き算していた）。
+  (if (= (u256-cmp (hi256 x) (zero256)) 0)
     x
     (u512-sub x (place0 (n-limbs)))))
 
