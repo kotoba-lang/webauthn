@@ -31,3 +31,16 @@
 ;; per-symbol instance で全グループ緑（u256 / mul / reduce / jacobian /
 ;; scalar-mult / modn / inv / verify）。main（全グループ直列）は pairs 天井
 ;; 2^6 で到達 — one-instance-per-test（amu test --native-runtime）が正。
+
+;; --- JUN-98 完了（2026-10-19、全 KAT が kexe_loader 実行で緑）---
+;; check-u256-mul / check-reduce / check-jacobian / check-scalar-mult /
+;; check-modn / check-inv / check-verify / check-cose / check-authdata /
+;; check-ceremony / check-clientdata => すべて 0（per-symbol instance）。
+;; 追加で実行緑になったもの:
+;;   COSE EC2 P-256 鍵抽出（77 bytes 固定形、hex 文字列規約、ヘッダ検証）
+;;   authData ヘッダ（rpIdHash/flags/signCount fixed offsets）
+;;   ceremony 状態遷移（init→pending-owner→session-live→txn-open→enrolled、
+;;     無効遷移は拒否コード）+ ecdsa-verify 接続
+;;   clientDataJSON 固定形パース（type/challenge/origin、quote 無し値前提）
+;; string-substring は (s start end) の end-based（probe で実測）。
+;; 実バグ計 7 件の内訳は PR の commit 群とこのファイルの追記に記録。
