@@ -7,7 +7,7 @@
              :crypto/ab [:record :crypto/ab [[:a [:ref :crypto/u256]] [:b [:ref :crypto/u256]]]]
              :crypto/jpoint [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]]
              :crypto/u512 [:record :crypto/u512 [[:w0 :i64] [:w1 :i64] [:w2 :i64] [:w3 :i64] [:w4 :i64] [:w5 :i64] [:w6 :i64] [:w7 :i64] [:w8 :i64] [:w9 :i64] [:w10 :i64] [:w11 :i64] [:w12 :i64] [:w13 :i64] [:w14 :i64] [:w15 :i64]]]})
-  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce check-u256 check-u256-mul check-reduce check-jacobian check-scalar-mult check-modn ecdsa-verify check-verify main]))
+  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce check-u256 check-u256-mul check-reduce check-jacobian check-scalar-mult check-modn ecdsa-verify check-verify check-inv main]))
 
 (def mask32 4294967295)
 (def carry-bit 4294967296)
@@ -836,22 +836,25 @@
 (defn- ab-make [a [:ref :crypto/u256] b [:ref :crypto/u256]] [:ref :crypto/ab]
   (record-new [:ref :crypto/ab] a b))
 
-(defn- inv-bits [v acc [:ref :crypto/u256] base [:ref :crypto/u256]] [:ref :crypto/ab]
-  (if (= v 0)
+(defn- inv-bits [v acc [:ref :crypto/u256] base [:ref :crypto/u256] steps] [:ref :crypto/ab]
+  ;; ちょうど 32 ステップ回す（v が早く 0 になっても base の桁合わせのため回す。
+  ;; 実測した modn-inv バグ: ビット長だけ回すと limb 間で base の指数がずれる）。
+  (if (= steps 0)
     (ab-make acc base)
     (inv-bits (i64-shift-right v 1)
               (if (= (bit-and v 1) 1) (modn-mul acc base) acc)
-              (modn-mul base base))))
+              (modn-mul base base)
+              (- steps 1))))
 
 (defn- modn-inv [s [:ref :crypto/u256]] [:ref :crypto/u256]
-  (let [ab1 (inv-bits 4234356047 (one256) s)
-        ab2 (inv-bits 4089039554 (ab-a ab1) (ab-b ab1))
-        ab3 (inv-bits 2803342980 (ab-a ab2) (ab-b ab2))
-        ab4 (inv-bits 3169254061 (ab-a ab3) (ab-b ab3))
-        ab5 (inv-bits 4294967295 (ab-a ab4) (ab-b ab4))
-        ab6 (inv-bits 4294967295 (ab-a ab5) (ab-b ab5))
-        ab7 (inv-bits 0 (ab-a ab6) (ab-b ab6))
-        ab8 (inv-bits 4294967295 (ab-a ab7) (ab-b ab7))]
+  (let [ab1 (inv-bits 4234356047 (one256) s 32)
+        ab2 (inv-bits 4089039554 (ab-a ab1) (ab-b ab1) 32)
+        ab3 (inv-bits 2803342980 (ab-a ab2) (ab-b ab2) 32)
+        ab4 (inv-bits 3169254061 (ab-a ab3) (ab-b ab3) 32)
+        ab5 (inv-bits 4294967295 (ab-a ab4) (ab-b ab4) 32)
+        ab6 (inv-bits 4294967295 (ab-a ab5) (ab-b ab5) 32)
+        ab7 (inv-bits 0 (ab-a ab6) (ab-b ab6) 32)
+        ab8 (inv-bits 4294967295 (ab-a ab7) (ab-b ab7) 32)]
     (ab-a ab8)))
 
 (defn ecdsa-verify [z [:ref :crypto/u256] r [:ref :crypto/u256] s [:ref :crypto/u256] qx [:ref :crypto/u256] qy [:ref :crypto/u256]] :i64
@@ -896,3 +899,15 @@
         v6 (if (= v5 0) (check-modn) v5)
         v7 (if (= v6 0) (check-verify) v6)]
     v7))
+
+(defn check-inv [] :i64
+  ;; modn-inv の KAT: s * s^(n-2) = 1 (mod n)。両方向（s と別値）。
+  (let [s (mk 817466956 1842916863 2100852341 1844467677 3014487835 497932726 1671039401 3276278130)
+        s2 (mk 817466957 1842916863 2100852341 1844467677 3014487835 497932726 1671039401 3276278130)
+        w (modn-inv s)
+        one (modn-mul s w)
+        w2 (modn-inv s2)
+        two (modn-mul s2 w2)]
+    (if (= (u256-cmp one (one256)) 0)
+      (if (= (u256-cmp two (one256)) 0) 0 2)
+      1)))
