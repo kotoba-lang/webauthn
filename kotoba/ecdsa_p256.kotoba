@@ -6,7 +6,7 @@
   (:schemas {:crypto/u256 [:record :crypto/u256 [[:l0 :i64] [:l1 :i64] [:l2 :i64] [:l3 :i64] [:l4 :i64] [:l5 :i64] [:l6 :i64] [:l7 :i64]]]
              :crypto/jpoint [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]]
              :crypto/u512 [:record :crypto/u512 [[:w0 :i64] [:w1 :i64] [:w2 :i64] [:w3 :i64] [:w4 :i64] [:w5 :i64] [:w6 :i64] [:w7 :i64] [:w8 :i64] [:w9 :i64] [:w10 :i64] [:w11 :i64] [:w12 :i64] [:w13 :i64] [:w14 :i64] [:w15 :i64]]]})
-  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce jacobian-double jacobian-add check-u256 check-u256-mul check-reduce check-jacobian]))
+  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce check-u256 check-u256-mul check-reduce check-jacobian]))
 
 (def mask32 4294967295)
 (def carry-bit 4294967296)
@@ -535,7 +535,7 @@
 (defn- mp-double [x [:ref :crypto/u256]] [:ref :crypto/u256]
   (mp-add x x))
 
-(defn jacobian-double [x [:ref :crypto/u256] y [:ref :crypto/u256] z [:ref :crypto/u256]] [:ref :crypto/jpoint]
+(defn- jacobian-double [x [:ref :crypto/u256] y [:ref :crypto/u256] z [:ref :crypto/u256]] [:ref :crypto/jpoint]
   (let [a (mp-mul x x)
         b (mp-mul y y)
         c (mp-mul b b)
@@ -559,7 +559,7 @@
         z3 (mp-double (mp-mul y z))]
     (record-new [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]] x3 y3 z3)))
 
-(defn jacobian-add [x1 [:ref :crypto/u256] y1 [:ref :crypto/u256] z1 [:ref :crypto/u256]
+(defn- jacobian-add [x1 [:ref :crypto/u256] y1 [:ref :crypto/u256] z1 [:ref :crypto/u256]
                     x2 [:ref :crypto/u256] y2 [:ref :crypto/u256] z2 [:ref :crypto/u256]] [:ref :crypto/jpoint]
   (let [z1z1 (mp-mul z1 z1)
         z2z2 (mp-mul z2 z2)
