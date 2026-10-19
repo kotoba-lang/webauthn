@@ -1,0 +1,120 @@
+(ns webauthn.ecdsa-p256
+  ;; ECDSA P-256 (ES256) 検証 — pure kotoba（JUN-98 (b): host capability も interop も使わない）。
+  ;; 256-bit は 32-bit 値 8 limb を :i64 に保持（積 32x32 は :i64 に正確）。
+  ;; この初片は u256 の基礎（比較・加算・減算）+ KAT。mod-p / Jacobian 点演算 / verify は後続。
+  ;; carry 検出は bit-and のみ（>= / div / mod を使わない — 許容 form を最小に）。
+  (:schemas {:crypto/u256 [:record :crypto/u256
+                           [[:l0 :i64] [:l1 :i64] [:l2 :i64] [:l3 :i64]
+                            [:l4 :i64] [:l5 :i64] [:l6 :i64] [:l7 :i64]]]})
+  (:export [u256-cmp u256-add u256-sub check-u256]))
+
+(def mask32 4294967295)
+(def carry-bit 4294967296)
+
+(defn- limb [x [:ref :crypto/u256] i] :i64
+  (cond
+    (= i 0) (record-get x :l0)
+    (= i 1) (record-get x :l1)
+    (= i 2) (record-get x :l2)
+    (= i 3) (record-get x :l3)
+    (= i 4) (record-get x :l4)
+    (= i 5) (record-get x :l5)
+    (= i 6) (record-get x :l6)
+    :else (record-get x :l7)))
+
+(defn- mk [a0 a1 a2 a3 a4 a5 a6 a7]
+  (record-new [:record :crypto/u256
+               [[:l0 :i64] [:l1 :i64] [:l2 :i64] [:l3 :i64]
+                [:l4 :i64] [:l5 :i64] [:l6 :i64] [:l7 :i64]]]
+              a0 a1 a2 a3 a4 a5 a6 a7))
+
+(defn u256-cmp [a [:ref :crypto/u256] b [:ref :crypto/u256]] :i64
+  ;; 1 if a > b, 0 if equal, -1 if a < b. High limb first.
+  (cond
+    (> (limb a 7) (limb b 7)) 1
+    (< (limb a 7) (limb b 7)) -1
+    (> (limb a 6) (limb b 6)) 1
+    (< (limb a 6) (limb b 6)) -1
+    (> (limb a 5) (limb b 5)) 1
+    (< (limb a 5) (limb b 5)) -1
+    (> (limb a 4) (limb b 4)) 1
+    (< (limb a 4) (limb b 4)) -1
+    (> (limb a 3) (limb b 3)) 1
+    (< (limb a 3) (limb b 3)) -1
+    (> (limb a 2) (limb b 2)) 1
+    (< (limb a 2) (limb b 2)) -1
+    (> (limb a 1) (limb b 1)) 1
+    (< (limb a 1) (limb b 1)) -1
+    (> (limb a 0) (limb b 0)) 1
+    (< (limb a 0) (limb b 0)) -1
+    :else 0))
+
+(defn u256-add [a [:ref :crypto/u256] b [:ref :crypto/u256]] [:ref :crypto/u256]
+  ;; 2^256 で畳み込み（mod 2^256）。carry は bit-and で検出。
+  (let [s0 (+ (limb a 0) (limb b 0))
+        l0 (bit-and s0 mask32)
+        c0 (bit-and s0 carry-bit)
+        s1 (+ (+ (limb a 1) (limb b 1)) c0)
+        l1 (bit-and s1 mask32)
+        c1 (bit-and s1 carry-bit)
+        s2 (+ (+ (limb a 2) (limb b 2)) c1)
+        l2 (bit-and s2 mask32)
+        c2 (bit-and s2 carry-bit)
+        s3 (+ (+ (limb a 3) (limb b 3)) c2)
+        l3 (bit-and s3 mask32)
+        c3 (bit-and s3 carry-bit)
+        s4 (+ (+ (limb a 4) (limb b 4)) c3)
+        l4 (bit-and s4 mask32)
+        c4 (bit-and s4 carry-bit)
+        s5 (+ (+ (limb a 5) (limb b 5)) c4)
+        l5 (bit-and s5 mask32)
+        c5 (bit-and s5 carry-bit)
+        s6 (+ (+ (limb a 6) (limb b 6)) c5)
+        l6 (bit-and s6 mask32)
+        c6 (bit-and s6 carry-bit)
+        s7 (+ (+ (limb a 7) (limb b 7)) c6)]
+    (mk l0 l1 l2 l3 l4 l5 l6 (bit-and s7 mask32))))
+
+(defn u256-sub [a [:ref :crypto/u256] b [:ref :crypto/u256]] [:ref :crypto/u256]
+  ;; a - b (mod 2^256)。borrow は (bit-and diff carry-bit) が非ゼロなら発生。
+  (let [d0 (- (limb a 0) (limb b 0))
+        l0 (bit-and d0 mask32)
+        br0 (if (= (bit-and d0 carry-bit) 0) 0 1)
+        d1 (- (- (limb a 1) (limb b 1)) br0)
+        l1 (bit-and d1 mask32)
+        br1 (if (= (bit-and d1 carry-bit) 0) 0 1)
+        d2 (- (- (limb a 2) (limb b 2)) br1)
+        l2 (bit-and d2 mask32)
+        br2 (if (= (bit-and d2 carry-bit) 0) 0 1)
+        d3 (- (- (limb a 3) (limb b 3)) br2)
+        l3 (bit-and d3 mask32)
+        br3 (if (= (bit-and d3 carry-bit) 0) 0 1)
+        d4 (- (- (limb a 4) (limb b 4)) br3)
+        l4 (bit-and d4 mask32)
+        br4 (if (= (bit-and d4 carry-bit) 0) 0 1)
+        d5 (- (- (limb a 5) (limb b 5)) br4)
+        l5 (bit-and d5 mask32)
+        br5 (if (= (bit-and d5 carry-bit) 0) 0 1)
+        d6 (- (- (limb a 6) (limb b 6)) br5)
+        l6 (bit-and d6 mask32)
+        br6 (if (= (bit-and d6 carry-bit) 0) 0 1)
+        d7 (- (- (limb a 7) (limb b 7)) br6)]
+    (mk l0 l1 l2 l3 l4 l5 l6 (bit-and d7 mask32))))
+
+(defn check-u256 [] :i64
+  ;; 両方向 KAT: (1+2=3)、(3-1=2)、borrow 連鎖 (0 - 1 = 2^256-1)、cmp 三方向。
+  (let [one (mk 1 0 0 0 0 0 0 0)
+        two (mk 2 0 0 0 0 0 0 0)
+        three (mk 3 0 0 0 0 0 0 0)
+        zero (mk 0 0 0 0 0 0 0 0)
+        allmax (mk 4294967295 4294967295 4294967295 4294967295
+                   4294967295 4294967295 4294967295 4294967295)]
+    (if (= (u256-cmp (u256-add one two) three) 0)
+      (if (= (u256-cmp (u256-sub three one) two) 0)
+        (if (= (u256-cmp (u256-sub zero one) allmax) 0)
+          (if (= (u256-cmp one two) -1)
+            (if (= (u256-cmp two one) 1) 0 5)
+            4)
+          3)
+        2)
+      1)))
