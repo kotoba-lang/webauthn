@@ -4,9 +4,10 @@
   ;; （32x32 の積は i64 に溢れるため lane 分解。carry は i64-shift-right 16、合成は i64-shift-left 16）。
   ;; mod-p / Jacobian 点演算 / verify は後続。KAT: check-u256 / check-u256-mul。
   (:schemas {:crypto/u256 [:record :crypto/u256 [[:l0 :i64] [:l1 :i64] [:l2 :i64] [:l3 :i64] [:l4 :i64] [:l5 :i64] [:l6 :i64] [:l7 :i64]]]
+             :crypto/ab [:record :crypto/ab [[:a [:ref :crypto/u256]] [:b [:ref :crypto/u256]]]]
              :crypto/jpoint [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]]
              :crypto/u512 [:record :crypto/u512 [[:w0 :i64] [:w1 :i64] [:w2 :i64] [:w3 :i64] [:w4 :i64] [:w5 :i64] [:w6 :i64] [:w7 :i64] [:w8 :i64] [:w9 :i64] [:w10 :i64] [:w11 :i64] [:w12 :i64] [:w13 :i64] [:w14 :i64] [:w15 :i64]]]})
-  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce check-u256 check-u256-mul check-reduce check-jacobian check-scalar-mult check-modn]))
+  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce check-u256 check-u256-mul check-reduce check-jacobian check-scalar-mult check-modn ecdsa-verify check-verify]))
 
 (def mask32 4294967295)
 (def carry-bit 4294967296)
@@ -765,3 +766,67 @@
           v5 (if (= (limb r5 0) (limb e5 0)) (if (= (limb r5 1) (limb e5 1)) (if (= (limb r5 2) (limb e5 2)) (if (= (limb r5 3) (limb e5 3)) (if (= (limb r5 4) (limb e5 4)) (if (= (limb r5 5) (limb e5 5)) (if (= (limb r5 6) (limb e5 6)) (if (= (limb r5 7) (limb e5 7)) 0 607) 606) 605) 604) 603) 602) 601) 600)
           ]
       (if (= v0 0) (if (= v1 0) (if (= v2 0) (if (= v3 0) (if (= v4 0) v5 v4) v3) v2) v1) v0))))
+
+
+;; ---- mod-n 逆元 + ECDSA 検証式（JUN-98 (b)）----
+;; w = s^(n-2) mod n（square-and-multiply、right-to-left、limb 8 本直列）。
+;; 検証: u1 = z*w, u2 = r*w (mod n), P = u1*G + u2*Q, r = x1 mod n。
+;; 無限遠（r,s = 0）は入口で拒否、点合成の無限遠は fail 3。z, x1 は 2n < 2^257 なので
+;; 条件付き減算 1 回で正規化。export は flat ABI（:i64 判定コード）。
+(defn- ab-a [x [:ref :crypto/ab]] [:ref :crypto/u256]
+  (record-get x :a))
+
+(defn- ab-b [x [:ref :crypto/ab]] [:ref :crypto/u256]
+  (record-get x :b))
+
+(defn- ab-make [a [:ref :crypto/u256] b [:ref :crypto/u256]] [:ref :crypto/ab]
+  (record-new [:ref :crypto/ab] a b))
+
+(defn- inv-bits [v acc [:ref :crypto/u256] base [:ref :crypto/u256]] [:ref :crypto/ab]
+  (if (= v 0)
+    (ab-make acc base)
+    (inv-bits (i64-shift-right v 1)
+              (if (= (bit-and v 1) 1) (modn-mul acc base) acc)
+              (modn-mul base base))))
+
+(defn- modn-inv [s [:ref :crypto/u256]] [:ref :crypto/u256]
+  (let [ab1 (inv-bits 4234356047 (one256) s)
+        ab2 (inv-bits 4089039554 (ab-a ab1) (ab-b ab1))
+        ab3 (inv-bits 2803342980 (ab-a ab2) (ab-b ab2))
+        ab4 (inv-bits 3169254061 (ab-a ab3) (ab-b ab3))
+        ab5 (inv-bits 4294967295 (ab-a ab4) (ab-b ab4))
+        ab6 (inv-bits 4294967295 (ab-a ab5) (ab-b ab5))
+        ab7 (inv-bits 0 (ab-a ab6) (ab-b ab6))
+        ab8 (inv-bits 4294967295 (ab-a ab7) (ab-b ab7))]
+    (ab-a ab8)))
+
+(defn ecdsa-verify [z [:ref :crypto/u256] r [:ref :crypto/u256] s [:ref :crypto/u256] qx [:ref :crypto/u256] qy [:ref :crypto/u256]] :i64
+  (cond
+    (or (= (u256-cmp r (zero256)) 0) (= (u256-cmp r (n-limbs)) 1)) 1
+    (or (= (u256-cmp s (zero256)) 0) (= (u256-cmp s (n-limbs)) 1)) 2
+    :else
+    (let [w (modn-inv s)
+          zr (if (= (u256-cmp z (n-limbs)) -1) z (u256-sub z (n-limbs)))
+          u1 (modn-mul zr w)
+          u2 (modn-mul r w)
+          p1 (scalar-mult u1 (gx) (gy) (one256))
+          p2 (scalar-mult u2 qx qy (one256))
+          pp (jadd-safe p1 p2)]
+      (if (z-zero? pp)
+        3
+        (let [x1 (record-get pp :x)
+              v (if (= (u256-cmp x1 (n-limbs)) -1) x1 (u256-sub x1 (n-limbs)))]
+          (if (= (u256-cmp v r) 0) 0 4))))))
+
+(defn check-verify [] :i64
+  (let [qx (mk 1108572689 1193865478 2213885207 4258355405 2961901589 4224723982 1053388823 430524029)
+        qy (mk 4174815491 1241539315 1561269178 747191145 329155421 3344700406 3062304027 3075419449)
+        z (mk 2920482254 2166162061 733311739 1296333954 4076481262 2553797965 241388191 872927758)
+        r (mk 2226447922 281651331 695954551 3340273130 2268050595 2561191025 2061857197 1195326521)
+        s (mk 817466956 1842916863 2100852341 1844467677 3014487835 497932726 1671039401 3276278130)
+        s2 (mk 817466957 1842916863 2100852341 1844467677 3014487835 497932726 1671039401 3276278130)
+        z2 (mk 2920482255 2166162061 733311739 1296333954 4076481262 2553797965 241388191 872927758)
+        v1 (ecdsa-verify z r s qx qy)
+        v2 (ecdsa-verify z r s2 qx qy)
+        v3 (ecdsa-verify z2 r s qx qy)]
+    (if (= v1 0) (if (= v2 4) (if (= v3 4) 0 33) 22) 11)))
