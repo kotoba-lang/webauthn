@@ -463,58 +463,75 @@
 (defn- hi-zero? [x [:ref :crypto/u512]] :bool
   (= (u256-cmp (hi256 x) (zero256)) 0))
 
-(defn u512-reduce [c [:ref :crypto/u512]] [:ref :crypto/u256]
-  ;; 13 回 fold（各 fold で hi は 1/2^32 に縮む）。残った上位は p を引き、
-  ;; 最後に u256 で条件付き p 減算。
+(defn- mul-small [x [:ref :crypto/u256] k] [:ref :crypto/u256]
+  ;; k は小さい非負（≤ 2^17）。語ごとに積と carry（i64-shift-right 32）。
   (let [
-        r1 (fold c)
-        r2 (fold r1)
-        r3 (fold r2)
-        r4 (fold r3)
-        r5 (fold r4)
-        r6 (fold r5)
-        r7 (fold r6)
-        r8 (fold r7)
-        r9 (fold r8)
-        r10 (fold r9)
-        r11 (fold r10)
-        r12 (fold r11)
-        r13 (fold r12)
-        r14 (if (hi-zero? r13) r13 (u512-sub r13 (place0 (p-limbs))))
-        r15 (if (hi-zero? r14) r14 (u512-sub r14 (place0 (p-limbs))))
-        x (lo256 r15)
+        t0 (* (limb x 0) k)
+        o0 (bit-and t0 mask32)
+        r0 (i64-shift-right t0 32)
+        t1 (+ (* (limb x 1) k) r0)
+        o1 (bit-and t1 mask32)
+        r1 (i64-shift-right t1 32)
+        t2 (+ (* (limb x 2) k) r1)
+        o2 (bit-and t2 mask32)
+        r2 (i64-shift-right t2 32)
+        t3 (+ (* (limb x 3) k) r2)
+        o3 (bit-and t3 mask32)
+        r3 (i64-shift-right t3 32)
+        t4 (+ (* (limb x 4) k) r3)
+        o4 (bit-and t4 mask32)
+        r4 (i64-shift-right t4 32)
+        t5 (+ (* (limb x 5) k) r4)
+        o5 (bit-and t5 mask32)
+        r5 (i64-shift-right t5 32)
+        t6 (+ (* (limb x 6) k) r5)
+        o6 (bit-and t6 mask32)
+        r6 (i64-shift-right t6 32)
+        t7 (+ (* (limb x 7) k) r6)
+        o7 (bit-and t7 mask32)]
+    (mk o0 o1 o2 o3 o4 o5 o6 o7)))
+
+(defn- r-const [k] [:ref :crypto/u256]
+  ;; 2^(32k) mod p（k=8..15）の語（python 導出）。k<8 は単位窓なので不要。
+  (cond
+    (= k 8) (mk 1 0 0 4294967295 4294967295 4294967295 4294967294 0)
+    (= k 9) (mk 0 1 0 0 4294967295 4294967295 4294967295 4294967294)
+    (= k 10) (mk 4294967295 0 1 1 4294967295 4294967294 0 4294967294)
+    (= k 11) (mk 4294967294 4294967295 0 3 0 4294967295 0 4294967294)
+    (= k 12) (mk 4294967294 4294967294 4294967295 2 2 0 1 4294967294)
+    (= k 13) (mk 4294967294 4294967294 4294967294 1 2 2 2 4294967294)
+    (= k 14) (mk 4294967295 4294967294 4294967294 4294967295 0 2 3 0)
+    :else (mk 0 4294967295 4294967294 4294967294 4294967295 0 2 3)))
+
+(defn u512-reduce [c [:ref :crypto/u512]] [:ref :crypto/u256]
+  ;; c mod p = lo256(c) + Σ_{k=8..15} (w c k) * 2^(32k mod p)。単位語の積は
+  ;; u256-mul（KAT 検証済み）で計算し、u512 で加算。tail は fold 3 回で畳む。
+  (let [base (place0 (lo256 c))
+        p8 (u256-mul (mk (w c 8) 0 0 0 0 0 0 0) (r-const 8))
+        p9 (u256-mul (mk (w c 9) 0 0 0 0 0 0 0) (r-const 9))
+        p10 (u256-mul (mk (w c 10) 0 0 0 0 0 0 0) (r-const 10))
+        p11 (u256-mul (mk (w c 11) 0 0 0 0 0 0 0) (r-const 11))
+        p12 (u256-mul (mk (w c 12) 0 0 0 0 0 0 0) (r-const 12))
+        p13 (u256-mul (mk (w c 13) 0 0 0 0 0 0 0) (r-const 13))
+        p14 (u256-mul (mk (w c 14) 0 0 0 0 0 0 0) (r-const 14))
+        p15 (u256-mul (mk (w c 15) 0 0 0 0 0 0 0) (r-const 15))
+        s1 (u512-add base p8)
+        s2 (u512-add s1 p9)
+        s3 (u512-add s2 p10)
+        s4 (u512-add s3 p11)
+        s5 (u512-add s4 p12)
+        s6 (u512-add s5 p13)
+        s7 (u512-add s6 p14)
+        s8 (u512-add s7 p15)
+        f1 (fold s8)
+        f2 (fold f1)
+        f3 (fold f2)
+        x (lo256 f3)
         y (if (= (u256-cmp x (p-limbs)) -1) x (sub-p-if-needed x))]
     y))
-
-(defn check-reduce [] :i64
-  (let [
-        c0 (mk512 2529268927 1386140289 4140357947 3106889340 4093542469 516634175 910299296 2018954121 2316197856 1256806337 1145942076 3077487986 118923336 1497822929 591774195 23795237)
-        e0 (mk 816264673 1556573005 1955428352 3105768189 1221093486 496193599 658031092 2861328656)
-        c1 (mk512 3117328854 2342114880 1263043679 1890669482 2760781409 4094190085 1165426127 2390680632 1356406898 331396899 338548253 1653375991 2761460277 1088664649 986632417 1939823919)
-        e1 (mk 2609966613 530446065 3534814233 3886411654 2187783935 3897716598 3110864773 3724510118)
-        c2 (mk512 344953785 802567286 1731783011 3936061458 3629698974 1457318507 83894993 3644564295 2379863736 3710619679 2856161534 3909216508 1441992751 1154427016 3499810949 794289034)
-        e2 (mk 724957271 478828748 3048634054 318199952 1460600950 499738134 2940882215 3340464620)
-        c3 (mk512 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 2147483648)
-        e3 (mk 1 2147483648 2147483647 2147483646 4294967295 2147483647 4294967295 2147483649)
-        c4 (mk512 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295)
-        e4 (mk 2 0 4294967295 4294967291 4294967294 4294967295 4294967293 4)
-        c5 (mk512 3 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
-        e5 (mk 3 0 0 0 0 0 0 0)
-        r0 (u512-reduce c0)
-        r1 (u512-reduce c1)
-        r2 (u512-reduce c2)
-        r3 (u512-reduce c3)
-        r4 (u512-reduce c4)
-        r5 (u512-reduce c5)]
-    (let [v0 (if (= (limb r0 7) (limb e0 7)) (if (= (limb r0 6) (limb e0 6)) (if (= (limb r0 5) (limb e0 5)) (if (= (limb r0 4) (limb e0 4)) (if (= (limb r0 3) (limb e0 3)) (if (= (limb r0 2) (limb e0 2)) (if (= (limb r0 1) (limb e0 1)) (if (= (limb r0 0) (limb e0 0)) 0 100) 101) 102) 103) 104) 105) 106) 107)
-          v1 (if (= (limb r1 7) (limb e1 7)) (if (= (limb r1 6) (limb e1 6)) (if (= (limb r1 5) (limb e1 5)) (if (= (limb r1 4) (limb e1 4)) (if (= (limb r1 3) (limb e1 3)) (if (= (limb r1 2) (limb e1 2)) (if (= (limb r1 1) (limb e1 1)) (if (= (limb r1 0) (limb e1 0)) 0 200) 201) 202) 203) 204) 205) 206) 207)
-          v2 (if (= (limb r2 7) (limb e2 7)) (if (= (limb r2 6) (limb e2 6)) (if (= (limb r2 5) (limb e2 5)) (if (= (limb r2 4) (limb e2 4)) (if (= (limb r2 3) (limb e2 3)) (if (= (limb r2 2) (limb e2 2)) (if (= (limb r2 1) (limb e2 1)) (if (= (limb r2 0) (limb e2 0)) 0 300) 301) 302) 303) 304) 305) 306) 307)
-          v3 (if (= (limb r3 7) (limb e3 7)) (if (= (limb r3 6) (limb e3 6)) (if (= (limb r3 5) (limb e3 5)) (if (= (limb r3 4) (limb e3 4)) (if (= (limb r3 3) (limb e3 3)) (if (= (limb r3 2) (limb e3 2)) (if (= (limb r3 1) (limb e3 1)) (if (= (limb r3 0) (limb e3 0)) 0 400) 401) 402) 403) 404) 405) 406) 407)
-          v4 (if (= (limb r4 7) (limb e4 7)) (if (= (limb r4 6) (limb e4 6)) (if (= (limb r4 5) (limb e4 5)) (if (= (limb r4 4) (limb e4 4)) (if (= (limb r4 3) (limb e4 3)) (if (= (limb r4 2) (limb e4 2)) (if (= (limb r4 1) (limb e4 1)) (if (= (limb r4 0) (limb e4 0)) 0 500) 501) 502) 503) 504) 505) 506) 507)
-          v5 (if (= (limb r5 7) (limb e5 7)) (if (= (limb r5 6) (limb e5 6)) (if (= (limb r5 5) (limb e5 5)) (if (= (limb r5 4) (limb e5 4)) (if (= (limb r5 3) (limb e5 3)) (if (= (limb r5 2) (limb e5 2)) (if (= (limb r5 1) (limb e5 1)) (if (= (limb r5 0) (limb e5 0)) 0 600) 601) 602) 603) 604) 605) 606) 607)
-          ]
-      (if (= v0 0) (if (= v1 0) (if (= v2 0) (if (= v3 0) (if (= v4 0) v5 v4) v3) v2) v1) v0))))
-
+(defn- p-m [] [:ref :crypto/u256]
+  ;; 2^256 mod p の語（low-first、python 導出）。
+  (mk 1 0 0 4294967295 4294967295 4294967295 4294967294 0))
 
 ;; ---- mod-p 演算 + Jacobian 点演算（JUN-98 (b)）----
 ;; mp-add は carry を落とさないよう u512 経由。点公式は dbl-2009-l（a=-3 折り込み）
@@ -594,6 +611,35 @@
         z3b (mp-sub z3a z2z2)
         z3 (mp-mul z3b h)]
     (record-new [:ref :crypto/jpoint] x3 y3 z3)))
+
+(defn check-reduce [] :i64
+  (let [
+        c0 (mk512 2529268927 1386140289 4140357947 3106889340 4093542469 516634175 910299296 2018954121 2316197856 1256806337 1145942076 3077487986 118923336 1497822929 591774195 23795237)
+        e0 (mk 816264673 1556573005 1955428352 3105768189 1221093486 496193599 658031092 2861328656)
+        c1 (mk512 3117328854 2342114880 1263043679 1890669482 2760781409 4094190085 1165426127 2390680632 1356406898 331396899 338548253 1653375991 2761460277 1088664649 986632417 1939823919)
+        e1 (mk 2609966613 530446065 3534814233 3886411654 2187783935 3897716598 3110864773 3724510118)
+        c2 (mk512 344953785 802567286 1731783011 3936061458 3629698974 1457318507 83894993 3644564295 2379863736 3710619679 2856161534 3909216508 1441992751 1154427016 3499810949 794289034)
+        e2 (mk 724957271 478828748 3048634054 318199952 1460600950 499738134 2940882215 3340464620)
+        c3 (mk512 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 2147483648)
+        e3 (mk 1 2147483648 2147483647 2147483646 4294967295 2147483647 4294967295 2147483649)
+        c4 (mk512 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295)
+        e4 (mk 2 0 4294967295 4294967291 4294967294 4294967295 4294967293 4)
+        c5 (mk512 3 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+        e5 (mk 3 0 0 0 0 0 0 0)
+        r0 (u512-reduce c0)
+        r1 (u512-reduce c1)
+        r2 (u512-reduce c2)
+        r3 (u512-reduce c3)
+        r4 (u512-reduce c4)
+        r5 (u512-reduce c5)]
+    (let [v0 (if (= (limb r0 0) (limb e0 0)) (if (= (limb r0 1) (limb e0 1)) (if (= (limb r0 2) (limb e0 2)) (if (= (limb r0 3) (limb e0 3)) (if (= (limb r0 4) (limb e0 4)) (if (= (limb r0 5) (limb e0 5)) (if (= (limb r0 6) (limb e0 6)) (if (= (limb r0 7) (limb e0 7)) 0 107) 106) 105) 104) 103) 102) 101) 100)
+          v1 (if (= (limb r1 0) (limb e1 0)) (if (= (limb r1 1) (limb e1 1)) (if (= (limb r1 2) (limb e1 2)) (if (= (limb r1 3) (limb e1 3)) (if (= (limb r1 4) (limb e1 4)) (if (= (limb r1 5) (limb e1 5)) (if (= (limb r1 6) (limb e1 6)) (if (= (limb r1 7) (limb e1 7)) 0 207) 206) 205) 204) 203) 202) 201) 200)
+          v2 (if (= (limb r2 0) (limb e2 0)) (if (= (limb r2 1) (limb e2 1)) (if (= (limb r2 2) (limb e2 2)) (if (= (limb r2 3) (limb e2 3)) (if (= (limb r2 4) (limb e2 4)) (if (= (limb r2 5) (limb e2 5)) (if (= (limb r2 6) (limb e2 6)) (if (= (limb r2 7) (limb e2 7)) 0 307) 306) 305) 304) 303) 302) 301) 300)
+          v3 (if (= (limb r3 0) (limb e3 0)) (if (= (limb r3 1) (limb e3 1)) (if (= (limb r3 2) (limb e3 2)) (if (= (limb r3 3) (limb e3 3)) (if (= (limb r3 4) (limb e3 4)) (if (= (limb r3 5) (limb e3 5)) (if (= (limb r3 6) (limb e3 6)) (if (= (limb r3 7) (limb e3 7)) 0 407) 406) 405) 404) 403) 402) 401) 400)
+          v4 (if (= (limb r4 0) (limb e4 0)) (if (= (limb r4 1) (limb e4 1)) (if (= (limb r4 2) (limb e4 2)) (if (= (limb r4 3) (limb e4 3)) (if (= (limb r4 4) (limb e4 4)) (if (= (limb r4 5) (limb e4 5)) (if (= (limb r4 6) (limb e4 6)) (if (= (limb r4 7) (limb e4 7)) 0 507) 506) 505) 504) 503) 502) 501) 500)
+          v5 (if (= (limb r5 0) (limb e5 0)) (if (= (limb r5 1) (limb e5 1)) (if (= (limb r5 2) (limb e5 2)) (if (= (limb r5 3) (limb e5 3)) (if (= (limb r5 4) (limb e5 4)) (if (= (limb r5 5) (limb e5 5)) (if (= (limb r5 6) (limb e5 6)) (if (= (limb r5 7) (limb e5 7)) 0 607) 606) 605) 604) 603) 602) 601) 600)
+          ]
+      (if (= v0 0) (if (= v1 0) (if (= v2 0) (if (= v3 0) (if (= v4 0) v5 v4) v3) v2) v1) v0))))
 
 (defn check-jacobian [] :i64
   (let [gx (gx)
