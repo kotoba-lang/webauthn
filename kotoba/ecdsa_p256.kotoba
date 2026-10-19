@@ -5,7 +5,7 @@
   ;; mod-p / Jacobian 点演算 / verify は後続。KAT: check-u256 / check-u256-mul。
   (:schemas {:crypto/u256 [:record :crypto/u256 [[:l0 :i64] [:l1 :i64] [:l2 :i64] [:l3 :i64] [:l4 :i64] [:l5 :i64] [:l6 :i64] [:l7 :i64]]]
              :crypto/u512 [:record :crypto/u512 [[:w0 :i64] [:w1 :i64] [:w2 :i64] [:w3 :i64] [:w4 :i64] [:w5 :i64] [:w6 :i64] [:w7 :i64] [:w8 :i64] [:w9 :i64] [:w10 :i64] [:w11 :i64] [:w12 :i64] [:w13 :i64] [:w14 :i64] [:w15 :i64]]]})
-  (:export [u256-cmp u256-add u256-sub u256-mul check-u256 check-u256-mul]))
+  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce check-u256 check-u256-mul check-reduce]))
 
 (def mask32 4294967295)
 (def carry-bit 4294967296)
@@ -299,3 +299,210 @@
           v2 (if (= (w p2 0) (w e2 0)) (if (= (w p2 1) (w e2 1)) (if (= (w p2 2) (w e2 2)) (if (= (w p2 3) (w e2 3)) (if (= (w p2 4) (w e2 4)) (if (= (w p2 5) (w e2 5)) (if (= (w p2 6) (w e2 6)) (if (= (w p2 7) (w e2 7)) (if (= (w p2 8) (w e2 8)) (if (= (w p2 9) (w e2 9)) (if (= (w p2 10) (w e2 10)) (if (= (w p2 11) (w e2 11)) (if (= (w p2 12) (w e2 12)) (if (= (w p2 13) (w e2 13)) (if (= (w p2 14) (w e2 14)) (if (= (w p2 15) (w e2 15)) 0 215) 214) 213) 212) 211) 210) 209) 208) 207) 206) 205) 204) 203) 202) 201) 200)
           v3 (if (= (w p3 0) (w e3 0)) (if (= (w p3 1) (w e3 1)) (if (= (w p3 2) (w e3 2)) (if (= (w p3 3) (w e3 3)) (if (= (w p3 4) (w e3 4)) (if (= (w p3 5) (w e3 5)) (if (= (w p3 6) (w e3 6)) (if (= (w p3 7) (w e3 7)) (if (= (w p3 8) (w e3 8)) (if (= (w p3 9) (w e3 9)) (if (= (w p3 10) (w e3 10)) (if (= (w p3 11) (w e3 11)) (if (= (w p3 12) (w e3 12)) (if (= (w p3 13) (w e3 13)) (if (= (w p3 14) (w e3 14)) (if (= (w p3 15) (w e3 15)) 0 315) 314) 313) 312) 311) 310) 309) 308) 307) 306) 305) 304) 303) 302) 301) 300)]
       (if (= v1 0) (if (= v2 0) v3 v2) v1))))
+
+
+;; ---- u512 ops + mod-p fast reduce (JUN-98 (b)) ----
+;; 恒等式: 2^256 = 2^224 - 2^192 - 2^96 + 1 (mod p)。X*M (M = 2^224-2^192-2^96+1)
+;; は A=(X@7 + X) - B=(X@6 + X@3)。A > B は常に成り立つ（符号なしのまま演算できる）。
+;; u512 の 32-bit word は w0 が最下位。@k は word offset k への配置。
+(defn u512-add [x [:ref :crypto/u512] y [:ref :crypto/u512]] [:ref :crypto/u512]
+  (let [
+        s0 (+ (w x 0) (w y 0))
+        q0 (bit-and s0 mask32)
+        cc0 (i64-shift-right s0 32)
+        s1 (+ (+ (w x 1) (w y 1)) cc0)
+        q1 (bit-and s1 mask32)
+        cc1 (i64-shift-right s1 32)
+        s2 (+ (+ (w x 2) (w y 2)) cc1)
+        q2 (bit-and s2 mask32)
+        cc2 (i64-shift-right s2 32)
+        s3 (+ (+ (w x 3) (w y 3)) cc2)
+        q3 (bit-and s3 mask32)
+        cc3 (i64-shift-right s3 32)
+        s4 (+ (+ (w x 4) (w y 4)) cc3)
+        q4 (bit-and s4 mask32)
+        cc4 (i64-shift-right s4 32)
+        s5 (+ (+ (w x 5) (w y 5)) cc4)
+        q5 (bit-and s5 mask32)
+        cc5 (i64-shift-right s5 32)
+        s6 (+ (+ (w x 6) (w y 6)) cc5)
+        q6 (bit-and s6 mask32)
+        cc6 (i64-shift-right s6 32)
+        s7 (+ (+ (w x 7) (w y 7)) cc6)
+        q7 (bit-and s7 mask32)
+        cc7 (i64-shift-right s7 32)
+        s8 (+ (+ (w x 8) (w y 8)) cc7)
+        q8 (bit-and s8 mask32)
+        cc8 (i64-shift-right s8 32)
+        s9 (+ (+ (w x 9) (w y 9)) cc8)
+        q9 (bit-and s9 mask32)
+        cc9 (i64-shift-right s9 32)
+        s10 (+ (+ (w x 10) (w y 10)) cc9)
+        q10 (bit-and s10 mask32)
+        cc10 (i64-shift-right s10 32)
+        s11 (+ (+ (w x 11) (w y 11)) cc10)
+        q11 (bit-and s11 mask32)
+        cc11 (i64-shift-right s11 32)
+        s12 (+ (+ (w x 12) (w y 12)) cc11)
+        q12 (bit-and s12 mask32)
+        cc12 (i64-shift-right s12 32)
+        s13 (+ (+ (w x 13) (w y 13)) cc12)
+        q13 (bit-and s13 mask32)
+        cc13 (i64-shift-right s13 32)
+        s14 (+ (+ (w x 14) (w y 14)) cc13)
+        q14 (bit-and s14 mask32)
+        cc14 (i64-shift-right s14 32)
+        s15 (+ (+ (w x 15) (w y 15)) cc14)
+        q15 (bit-and s15 mask32)]
+    (mk512 q0 q1 q2 q3 q4 q5 q6 q7 q8 q9 q10 q11 q12 q13 q14 q15)))
+
+(defn u512-sub [x [:ref :crypto/u512] y [:ref :crypto/u512]] [:ref :crypto/u512]
+  (let [
+        d0 (- (w x 0) (w y 0))
+        q0 (bit-and d0 mask32)
+        bb0 (if (= (bit-and d0 carry-bit) 0) 0 1)
+        d1 (- (- (w x 1) (w y 1)) bb0)
+        q1 (bit-and d1 mask32)
+        bb1 (if (= (bit-and d1 carry-bit) 0) 0 1)
+        d2 (- (- (w x 2) (w y 2)) bb1)
+        q2 (bit-and d2 mask32)
+        bb2 (if (= (bit-and d2 carry-bit) 0) 0 1)
+        d3 (- (- (w x 3) (w y 3)) bb2)
+        q3 (bit-and d3 mask32)
+        bb3 (if (= (bit-and d3 carry-bit) 0) 0 1)
+        d4 (- (- (w x 4) (w y 4)) bb3)
+        q4 (bit-and d4 mask32)
+        bb4 (if (= (bit-and d4 carry-bit) 0) 0 1)
+        d5 (- (- (w x 5) (w y 5)) bb4)
+        q5 (bit-and d5 mask32)
+        bb5 (if (= (bit-and d5 carry-bit) 0) 0 1)
+        d6 (- (- (w x 6) (w y 6)) bb5)
+        q6 (bit-and d6 mask32)
+        bb6 (if (= (bit-and d6 carry-bit) 0) 0 1)
+        d7 (- (- (w x 7) (w y 7)) bb6)
+        q7 (bit-and d7 mask32)
+        bb7 (if (= (bit-and d7 carry-bit) 0) 0 1)
+        d8 (- (- (w x 8) (w y 8)) bb7)
+        q8 (bit-and d8 mask32)
+        bb8 (if (= (bit-and d8 carry-bit) 0) 0 1)
+        d9 (- (- (w x 9) (w y 9)) bb8)
+        q9 (bit-and d9 mask32)
+        bb9 (if (= (bit-and d9 carry-bit) 0) 0 1)
+        d10 (- (- (w x 10) (w y 10)) bb9)
+        q10 (bit-and d10 mask32)
+        bb10 (if (= (bit-and d10 carry-bit) 0) 0 1)
+        d11 (- (- (w x 11) (w y 11)) bb10)
+        q11 (bit-and d11 mask32)
+        bb11 (if (= (bit-and d11 carry-bit) 0) 0 1)
+        d12 (- (- (w x 12) (w y 12)) bb11)
+        q12 (bit-and d12 mask32)
+        bb12 (if (= (bit-and d12 carry-bit) 0) 0 1)
+        d13 (- (- (w x 13) (w y 13)) bb12)
+        q13 (bit-and d13 mask32)
+        bb13 (if (= (bit-and d13 carry-bit) 0) 0 1)
+        d14 (- (- (w x 14) (w y 14)) bb13)
+        q14 (bit-and d14 mask32)
+        bb14 (if (= (bit-and d14 carry-bit) 0) 0 1)
+        d15 (- (- (w x 15) (w y 15)) bb14)
+        q15 (bit-and d15 mask32)]
+    (mk512 q0 q1 q2 q3 q4 q5 q6 q7 q8 q9 q10 q11 q12 q13 q14 q15)))
+
+(defn place0 [x [:ref :crypto/u256]] [:ref :crypto/u512]
+  (mk512 
+          (limb x 0) (limb x 1) (limb x 2) (limb x 3) (limb x 4) (limb x 5) (limb x 6) (limb x 7) 0 0 0 0 0 0 0 0))
+
+(defn place3 [x [:ref :crypto/u256]] [:ref :crypto/u512]
+  (mk512 
+          0 0 0 (limb x 0) (limb x 1) (limb x 2) (limb x 3) (limb x 4) (limb x 5) (limb x 6) (limb x 7) 0 0 0 0 0))
+
+(defn place6 [x [:ref :crypto/u256]] [:ref :crypto/u512]
+  (mk512 
+          0 0 0 0 0 0 (limb x 0) (limb x 1) (limb x 2) (limb x 3) (limb x 4) (limb x 5) (limb x 6) (limb x 7) 0 0))
+
+(defn place7 [x [:ref :crypto/u256]] [:ref :crypto/u512]
+  (mk512 
+          0 0 0 0 0 0 0 (limb x 0) (limb x 1) (limb x 2) (limb x 3) (limb x 4) (limb x 5) (limb x 6) (limb x 7) 0))
+
+(defn- lo256 [c [:ref :crypto/u512]] [:ref :crypto/u256]
+  (mk (w c 0) (w c 1) (w c 2) (w c 3) (w c 4) (w c 5) (w c 6) (w c 7)))
+
+(defn- hi256 [c [:ref :crypto/u512]] [:ref :crypto/u256]
+  (mk (w c 8) (w c 9) (w c 10) (w c 11) (w c 12) (w c 13) (w c 14) (w c 15)))
+
+(defn- m-mul [x [:ref :crypto/u256]] [:ref :crypto/u512]
+  (let [a (u512-add (place7 x) (place0 x))
+        b (u512-add (place6 x) (place3 x))]
+    (u512-sub a b)))
+
+(defn- fold [c [:ref :crypto/u512]] [:ref :crypto/u512]
+  (u512-add (place0 (lo256 c)) (m-mul (hi256 c))))
+
+;; p の 8x32-bit limb（def は定数のみなので関数で持つ）。
+
+(defn- p-limbs [] [:ref :crypto/u256]
+  ;; p = 2^256 - 2^224 + 2^192 + 2^96 - 1 の 32-bit limb（w0 が最下位）。
+  (mk 4294967295 4294967295 4294967295 0 0 0 1 4294967295))
+
+(defn- sub-p-if-needed [x [:ref :crypto/u256]] [:ref :crypto/u256]
+  (let [a (if (= (u256-cmp x (p-limbs)) 1) (u256-sub x (p-limbs)) x)
+        b (if (= (u256-cmp a (p-limbs)) 1) (u256-sub a (p-limbs)) a)
+        c2 (if (= (u256-cmp b (p-limbs)) 1) (u256-sub b (p-limbs)) b)]
+    c2))
+
+(defn- zero256 [] [:ref :crypto/u256]
+  (mk 0 0 0 0 0 0 0 0))
+
+(defn- hi-zero? [x [:ref :crypto/u512]] :bool
+  (= (u256-cmp (hi256 x) (zero256)) 0))
+
+(defn u512-reduce [c [:ref :crypto/u512]] [:ref :crypto/u256]
+  ;; 13 回 fold（各 fold で hi は 1/2^32 に縮む）。残った上位は p を引き、
+  ;; 最後に u256 で条件付き p 減算。
+  (let [
+        r1 (fold c)
+        r2 (fold r1)
+        r3 (fold r2)
+        r4 (fold r3)
+        r5 (fold r4)
+        r6 (fold r5)
+        r7 (fold r6)
+        r8 (fold r7)
+        r9 (fold r8)
+        r10 (fold r9)
+        r11 (fold r10)
+        r12 (fold r11)
+        r13 (fold r12)
+        r14 (if (hi-zero? r13) r13 (u512-sub r13 (place0 (p-limbs))))
+        r15 (if (hi-zero? r14) r14 (u512-sub r14 (place0 (p-limbs))))
+        x (lo256 r15)
+        y (if (= (u256-cmp x (p-limbs)) -1) x (sub-p-if-needed x))]
+    y))
+
+(defn check-reduce [] :i64
+  (let [
+        c0 (mk512 2529268927 1386140289 4140357947 3106889340 4093542469 516634175 910299296 2018954121 2316197856 1256806337 1145942076 3077487986 118923336 1497822929 591774195 23795237)
+        e0 (mk 816264673 1556573005 1955428352 3105768189 1221093486 496193599 658031092 2861328656)
+        c1 (mk512 3117328854 2342114880 1263043679 1890669482 2760781409 4094190085 1165426127 2390680632 1356406898 331396899 338548253 1653375991 2761460277 1088664649 986632417 1939823919)
+        e1 (mk 2609966613 530446065 3534814233 3886411654 2187783935 3897716598 3110864773 3724510118)
+        c2 (mk512 344953785 802567286 1731783011 3936061458 3629698974 1457318507 83894993 3644564295 2379863736 3710619679 2856161534 3909216508 1441992751 1154427016 3499810949 794289034)
+        e2 (mk 724957271 478828748 3048634054 318199952 1460600950 499738134 2940882215 3340464620)
+        c3 (mk512 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 2147483648)
+        e3 (mk 1 2147483648 2147483647 2147483646 4294967295 2147483647 4294967295 2147483649)
+        c4 (mk512 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295)
+        e4 (mk 2 0 4294967295 4294967291 4294967294 4294967295 4294967293 4)
+        c5 (mk512 3 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+        e5 (mk 3 0 0 0 0 0 0 0)
+        r0 (u512-reduce c0)
+        r1 (u512-reduce c1)
+        r2 (u512-reduce c2)
+        r3 (u512-reduce c3)
+        r4 (u512-reduce c4)
+        r5 (u512-reduce c5)]
+    (let [v0 (if (= (limb r0 7) (limb e0 7)) (if (= (limb r0 6) (limb e0 6)) (if (= (limb r0 5) (limb e0 5)) (if (= (limb r0 4) (limb e0 4)) (if (= (limb r0 3) (limb e0 3)) (if (= (limb r0 2) (limb e0 2)) (if (= (limb r0 1) (limb e0 1)) (if (= (limb r0 0) (limb e0 0)) 0 100) 101) 102) 103) 104) 105) 106) 107)
+          v1 (if (= (limb r1 7) (limb e1 7)) (if (= (limb r1 6) (limb e1 6)) (if (= (limb r1 5) (limb e1 5)) (if (= (limb r1 4) (limb e1 4)) (if (= (limb r1 3) (limb e1 3)) (if (= (limb r1 2) (limb e1 2)) (if (= (limb r1 1) (limb e1 1)) (if (= (limb r1 0) (limb e1 0)) 0 200) 201) 202) 203) 204) 205) 206) 207)
+          v2 (if (= (limb r2 7) (limb e2 7)) (if (= (limb r2 6) (limb e2 6)) (if (= (limb r2 5) (limb e2 5)) (if (= (limb r2 4) (limb e2 4)) (if (= (limb r2 3) (limb e2 3)) (if (= (limb r2 2) (limb e2 2)) (if (= (limb r2 1) (limb e2 1)) (if (= (limb r2 0) (limb e2 0)) 0 300) 301) 302) 303) 304) 305) 306) 307)
+          v3 (if (= (limb r3 7) (limb e3 7)) (if (= (limb r3 6) (limb e3 6)) (if (= (limb r3 5) (limb e3 5)) (if (= (limb r3 4) (limb e3 4)) (if (= (limb r3 3) (limb e3 3)) (if (= (limb r3 2) (limb e3 2)) (if (= (limb r3 1) (limb e3 1)) (if (= (limb r3 0) (limb e3 0)) 0 400) 401) 402) 403) 404) 405) 406) 407)
+          v4 (if (= (limb r4 7) (limb e4 7)) (if (= (limb r4 6) (limb e4 6)) (if (= (limb r4 5) (limb e4 5)) (if (= (limb r4 4) (limb e4 4)) (if (= (limb r4 3) (limb e4 3)) (if (= (limb r4 2) (limb e4 2)) (if (= (limb r4 1) (limb e4 1)) (if (= (limb r4 0) (limb e4 0)) 0 500) 501) 502) 503) 504) 505) 506) 507)
+          v5 (if (= (limb r5 7) (limb e5 7)) (if (= (limb r5 6) (limb e5 6)) (if (= (limb r5 5) (limb e5 5)) (if (= (limb r5 4) (limb e5 4)) (if (= (limb r5 3) (limb e5 3)) (if (= (limb r5 2) (limb e5 2)) (if (= (limb r5 1) (limb e5 1)) (if (= (limb r5 0) (limb e5 0)) 0 600) 601) 602) 603) 604) 605) 606) 607)
+          ]
+      (if (= v0 0) (if (= v1 0) (if (= v2 0) (if (= v3 0) (if (= v4 0) v5 v4) v3) v2) v1) v0))))
