@@ -1,15 +1,15 @@
 (ns webauthn.ecdsa-p256
-  ;; ECDSA P-256 (ES256) 検証 — pure kotoba（JUN-98 (b): host capability も interop も使わない）。
-  ;; 256-bit は 32-bit 値 8 limb を :i64 に保持（積 32x32 は :i64 に正確）。
-  ;; この初片は u256 の基礎（比較・加算・減算）+ KAT。mod-p / Jacobian 点演算 / verify は後続。
-  ;; carry 検出は bit-and のみ（>= / div / mod を使わない — 許容 form を最小に）。
-  (:schemas {:crypto/u256 [:record :crypto/u256
-                           [[:l0 :i64] [:l1 :i64] [:l2 :i64] [:l3 :i64]
-                            [:l4 :i64] [:l5 :i64] [:l6 :i64] [:l7 :i64]]]})
-  (:export [u256-cmp u256-add u256-sub check-u256]))
+  ;; ECDSA P-256 (ES256) 検証 — pure kotoba（JUN-98 (b)）。host capability も interop も使わない。
+  ;; u256 = 8x32-bit limb（:i64 保持）、u512 = 16x32-bit。mul は 16-bit lane 畳み込み
+  ;; （32x32 の積は i64 に溢れるため lane 分解。carry は i64-shift-right 16、合成は i64-shift-left 16）。
+  ;; mod-p / Jacobian 点演算 / verify は後続。KAT: check-u256 / check-u256-mul。
+  (:schemas {:crypto/u256 [:record :crypto/u256 [[:l0 :i64] [:l1 :i64] [:l2 :i64] [:l3 :i64] [:l4 :i64] [:l5 :i64] [:l6 :i64] [:l7 :i64]]]
+             :crypto/u512 [:record :crypto/u512 [[:w0 :i64] [:w1 :i64] [:w2 :i64] [:w3 :i64] [:w4 :i64] [:w5 :i64] [:w6 :i64] [:w7 :i64] [:w8 :i64] [:w9 :i64] [:w10 :i64] [:w11 :i64] [:w12 :i64] [:w13 :i64] [:w14 :i64] [:w15 :i64]]]})
+  (:export [u256-cmp u256-add u256-sub u256-mul check-u256 check-u256-mul]))
 
 (def mask32 4294967295)
 (def carry-bit 4294967296)
+(def mask16 65535)
 
 (defn- limb [x [:ref :crypto/u256] i] :i64
   (cond
@@ -23,13 +23,31 @@
     :else (record-get x :l7)))
 
 (defn- mk [a0 a1 a2 a3 a4 a5 a6 a7]
-  (record-new [:record :crypto/u256
-               [[:l0 :i64] [:l1 :i64] [:l2 :i64] [:l3 :i64]
-                [:l4 :i64] [:l5 :i64] [:l6 :i64] [:l7 :i64]]]
-              a0 a1 a2 a3 a4 a5 a6 a7))
+  (record-new [:record :crypto/u256 [[:l0 :i64] [:l1 :i64] [:l2 :i64] [:l3 :i64] [:l4 :i64] [:l5 :i64] [:l6 :i64] [:l7 :i64]]] a0 a1 a2 a3 a4 a5 a6 a7))
+
+(defn- mk512 [w0 w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14 w15]
+  (record-new [:record :crypto/u512 [[:w0 :i64] [:w1 :i64] [:w2 :i64] [:w3 :i64] [:w4 :i64] [:w5 :i64] [:w6 :i64] [:w7 :i64] [:w8 :i64] [:w9 :i64] [:w10 :i64] [:w11 :i64] [:w12 :i64] [:w13 :i64] [:w14 :i64] [:w15 :i64]]] w0 w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14 w15))
+
+(defn- w [x [:ref :crypto/u512] i] :i64
+  (cond
+    (= i 0) (record-get x :w0)
+    (= i 1) (record-get x :w1)
+    (= i 2) (record-get x :w2)
+    (= i 3) (record-get x :w3)
+    (= i 4) (record-get x :w4)
+    (= i 5) (record-get x :w5)
+    (= i 6) (record-get x :w6)
+    (= i 7) (record-get x :w7)
+    (= i 8) (record-get x :w8)
+    (= i 9) (record-get x :w9)
+    (= i 10) (record-get x :w10)
+    (= i 11) (record-get x :w11)
+    (= i 12) (record-get x :w12)
+    (= i 13) (record-get x :w13)
+    (= i 14) (record-get x :w14)
+    :else (record-get x :w15)))
 
 (defn u256-cmp [a [:ref :crypto/u256] b [:ref :crypto/u256]] :i64
-  ;; 1 if a > b, 0 if equal, -1 if a < b. High limb first.
   (cond
     (> (limb a 7) (limb b 7)) 1
     (< (limb a 7) (limb b 7)) -1
@@ -50,7 +68,6 @@
     :else 0))
 
 (defn u256-add [a [:ref :crypto/u256] b [:ref :crypto/u256]] [:ref :crypto/u256]
-  ;; 2^256 で畳み込み（mod 2^256）。carry は bit-and で検出。
   (let [s0 (+ (limb a 0) (limb b 0))
         l0 (bit-and s0 mask32)
         c0 (bit-and s0 carry-bit)
@@ -76,7 +93,6 @@
     (mk l0 l1 l2 l3 l4 l5 l6 (bit-and s7 mask32))))
 
 (defn u256-sub [a [:ref :crypto/u256] b [:ref :crypto/u256]] [:ref :crypto/u256]
-  ;; a - b (mod 2^256)。borrow は (bit-and diff carry-bit) が非ゼロなら発生。
   (let [d0 (- (limb a 0) (limb b 0))
         l0 (bit-and d0 mask32)
         br0 (if (= (bit-and d0 carry-bit) 0) 0 1)
@@ -101,8 +117,154 @@
         d7 (- (- (limb a 7) (limb b 7)) br6)]
     (mk l0 l1 l2 l3 l4 l5 l6 (bit-and d7 mask32))))
 
+(defn u256-mul [a [:ref :crypto/u256] b [:ref :crypto/u256]] [:ref :crypto/u512]
+  (let [
+        a0 (bit-and (limb a 0) mask16)
+        a1 (i64-shift-right (limb a 0) 16)
+        a2 (bit-and (limb a 1) mask16)
+        a3 (i64-shift-right (limb a 1) 16)
+        a4 (bit-and (limb a 2) mask16)
+        a5 (i64-shift-right (limb a 2) 16)
+        a6 (bit-and (limb a 3) mask16)
+        a7 (i64-shift-right (limb a 3) 16)
+        a8 (bit-and (limb a 4) mask16)
+        a9 (i64-shift-right (limb a 4) 16)
+        a10 (bit-and (limb a 5) mask16)
+        a11 (i64-shift-right (limb a 5) 16)
+        a12 (bit-and (limb a 6) mask16)
+        a13 (i64-shift-right (limb a 6) 16)
+        a14 (bit-and (limb a 7) mask16)
+        a15 (i64-shift-right (limb a 7) 16)
+        b0 (bit-and (limb b 0) mask16)
+        b1 (i64-shift-right (limb b 0) 16)
+        b2 (bit-and (limb b 1) mask16)
+        b3 (i64-shift-right (limb b 1) 16)
+        b4 (bit-and (limb b 2) mask16)
+        b5 (i64-shift-right (limb b 2) 16)
+        b6 (bit-and (limb b 3) mask16)
+        b7 (i64-shift-right (limb b 3) 16)
+        b8 (bit-and (limb b 4) mask16)
+        b9 (i64-shift-right (limb b 4) 16)
+        b10 (bit-and (limb b 5) mask16)
+        b11 (i64-shift-right (limb b 5) 16)
+        b12 (bit-and (limb b 6) mask16)
+        b13 (i64-shift-right (limb b 6) 16)
+        b14 (bit-and (limb b 7) mask16)
+        b15 (i64-shift-right (limb b 7) 16)
+        t0 (* a0 b0)
+        c0 (bit-and t0 mask16)
+        r0 (i64-shift-right t0 16)
+        t1 (+ (+ (* a0 b1) (* a1 b0)) r0)
+        c1 (bit-and t1 mask16)
+        r1 (i64-shift-right t1 16)
+        t2 (+ (+ (+ (* a0 b2) (* a1 b1)) (* a2 b0)) r1)
+        c2 (bit-and t2 mask16)
+        r2 (i64-shift-right t2 16)
+        t3 (+ (+ (+ (+ (* a0 b3) (* a1 b2)) (* a2 b1)) (* a3 b0)) r2)
+        c3 (bit-and t3 mask16)
+        r3 (i64-shift-right t3 16)
+        t4 (+ (+ (+ (+ (+ (* a0 b4) (* a1 b3)) (* a2 b2)) (* a3 b1)) (* a4 b0)) r3)
+        c4 (bit-and t4 mask16)
+        r4 (i64-shift-right t4 16)
+        t5 (+ (+ (+ (+ (+ (+ (* a0 b5) (* a1 b4)) (* a2 b3)) (* a3 b2)) (* a4 b1)) (* a5 b0)) r4)
+        c5 (bit-and t5 mask16)
+        r5 (i64-shift-right t5 16)
+        t6 (+ (+ (+ (+ (+ (+ (+ (* a0 b6) (* a1 b5)) (* a2 b4)) (* a3 b3)) (* a4 b2)) (* a5 b1)) (* a6 b0)) r5)
+        c6 (bit-and t6 mask16)
+        r6 (i64-shift-right t6 16)
+        t7 (+ (+ (+ (+ (+ (+ (+ (+ (* a0 b7) (* a1 b6)) (* a2 b5)) (* a3 b4)) (* a4 b3)) (* a5 b2)) (* a6 b1)) (* a7 b0)) r6)
+        c7 (bit-and t7 mask16)
+        r7 (i64-shift-right t7 16)
+        t8 (+ (+ (+ (+ (+ (+ (+ (+ (+ (* a0 b8) (* a1 b7)) (* a2 b6)) (* a3 b5)) (* a4 b4)) (* a5 b3)) (* a6 b2)) (* a7 b1)) (* a8 b0)) r7)
+        c8 (bit-and t8 mask16)
+        r8 (i64-shift-right t8 16)
+        t9 (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (* a0 b9) (* a1 b8)) (* a2 b7)) (* a3 b6)) (* a4 b5)) (* a5 b4)) (* a6 b3)) (* a7 b2)) (* a8 b1)) (* a9 b0)) r8)
+        c9 (bit-and t9 mask16)
+        r9 (i64-shift-right t9 16)
+        t10 (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (* a0 b10) (* a1 b9)) (* a2 b8)) (* a3 b7)) (* a4 b6)) (* a5 b5)) (* a6 b4)) (* a7 b3)) (* a8 b2)) (* a9 b1)) (* a10 b0)) r9)
+        c10 (bit-and t10 mask16)
+        r10 (i64-shift-right t10 16)
+        t11 (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (* a0 b11) (* a1 b10)) (* a2 b9)) (* a3 b8)) (* a4 b7)) (* a5 b6)) (* a6 b5)) (* a7 b4)) (* a8 b3)) (* a9 b2)) (* a10 b1)) (* a11 b0)) r10)
+        c11 (bit-and t11 mask16)
+        r11 (i64-shift-right t11 16)
+        t12 (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (* a0 b12) (* a1 b11)) (* a2 b10)) (* a3 b9)) (* a4 b8)) (* a5 b7)) (* a6 b6)) (* a7 b5)) (* a8 b4)) (* a9 b3)) (* a10 b2)) (* a11 b1)) (* a12 b0)) r11)
+        c12 (bit-and t12 mask16)
+        r12 (i64-shift-right t12 16)
+        t13 (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (* a0 b13) (* a1 b12)) (* a2 b11)) (* a3 b10)) (* a4 b9)) (* a5 b8)) (* a6 b7)) (* a7 b6)) (* a8 b5)) (* a9 b4)) (* a10 b3)) (* a11 b2)) (* a12 b1)) (* a13 b0)) r12)
+        c13 (bit-and t13 mask16)
+        r13 (i64-shift-right t13 16)
+        t14 (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (* a0 b14) (* a1 b13)) (* a2 b12)) (* a3 b11)) (* a4 b10)) (* a5 b9)) (* a6 b8)) (* a7 b7)) (* a8 b6)) (* a9 b5)) (* a10 b4)) (* a11 b3)) (* a12 b2)) (* a13 b1)) (* a14 b0)) r13)
+        c14 (bit-and t14 mask16)
+        r14 (i64-shift-right t14 16)
+        t15 (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (* a0 b15) (* a1 b14)) (* a2 b13)) (* a3 b12)) (* a4 b11)) (* a5 b10)) (* a6 b9)) (* a7 b8)) (* a8 b7)) (* a9 b6)) (* a10 b5)) (* a11 b4)) (* a12 b3)) (* a13 b2)) (* a14 b1)) (* a15 b0)) r14)
+        c15 (bit-and t15 mask16)
+        r15 (i64-shift-right t15 16)
+        t16 (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (* a1 b15) (* a2 b14)) (* a3 b13)) (* a4 b12)) (* a5 b11)) (* a6 b10)) (* a7 b9)) (* a8 b8)) (* a9 b7)) (* a10 b6)) (* a11 b5)) (* a12 b4)) (* a13 b3)) (* a14 b2)) (* a15 b1)) r15)
+        c16 (bit-and t16 mask16)
+        r16 (i64-shift-right t16 16)
+        t17 (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (* a2 b15) (* a3 b14)) (* a4 b13)) (* a5 b12)) (* a6 b11)) (* a7 b10)) (* a8 b9)) (* a9 b8)) (* a10 b7)) (* a11 b6)) (* a12 b5)) (* a13 b4)) (* a14 b3)) (* a15 b2)) r16)
+        c17 (bit-and t17 mask16)
+        r17 (i64-shift-right t17 16)
+        t18 (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (* a3 b15) (* a4 b14)) (* a5 b13)) (* a6 b12)) (* a7 b11)) (* a8 b10)) (* a9 b9)) (* a10 b8)) (* a11 b7)) (* a12 b6)) (* a13 b5)) (* a14 b4)) (* a15 b3)) r17)
+        c18 (bit-and t18 mask16)
+        r18 (i64-shift-right t18 16)
+        t19 (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (* a4 b15) (* a5 b14)) (* a6 b13)) (* a7 b12)) (* a8 b11)) (* a9 b10)) (* a10 b9)) (* a11 b8)) (* a12 b7)) (* a13 b6)) (* a14 b5)) (* a15 b4)) r18)
+        c19 (bit-and t19 mask16)
+        r19 (i64-shift-right t19 16)
+        t20 (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (* a5 b15) (* a6 b14)) (* a7 b13)) (* a8 b12)) (* a9 b11)) (* a10 b10)) (* a11 b9)) (* a12 b8)) (* a13 b7)) (* a14 b6)) (* a15 b5)) r19)
+        c20 (bit-and t20 mask16)
+        r20 (i64-shift-right t20 16)
+        t21 (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (* a6 b15) (* a7 b14)) (* a8 b13)) (* a9 b12)) (* a10 b11)) (* a11 b10)) (* a12 b9)) (* a13 b8)) (* a14 b7)) (* a15 b6)) r20)
+        c21 (bit-and t21 mask16)
+        r21 (i64-shift-right t21 16)
+        t22 (+ (+ (+ (+ (+ (+ (+ (+ (+ (* a7 b15) (* a8 b14)) (* a9 b13)) (* a10 b12)) (* a11 b11)) (* a12 b10)) (* a13 b9)) (* a14 b8)) (* a15 b7)) r21)
+        c22 (bit-and t22 mask16)
+        r22 (i64-shift-right t22 16)
+        t23 (+ (+ (+ (+ (+ (+ (+ (+ (* a8 b15) (* a9 b14)) (* a10 b13)) (* a11 b12)) (* a12 b11)) (* a13 b10)) (* a14 b9)) (* a15 b8)) r22)
+        c23 (bit-and t23 mask16)
+        r23 (i64-shift-right t23 16)
+        t24 (+ (+ (+ (+ (+ (+ (+ (* a9 b15) (* a10 b14)) (* a11 b13)) (* a12 b12)) (* a13 b11)) (* a14 b10)) (* a15 b9)) r23)
+        c24 (bit-and t24 mask16)
+        r24 (i64-shift-right t24 16)
+        t25 (+ (+ (+ (+ (+ (+ (* a10 b15) (* a11 b14)) (* a12 b13)) (* a13 b12)) (* a14 b11)) (* a15 b10)) r24)
+        c25 (bit-and t25 mask16)
+        r25 (i64-shift-right t25 16)
+        t26 (+ (+ (+ (+ (+ (* a11 b15) (* a12 b14)) (* a13 b13)) (* a14 b12)) (* a15 b11)) r25)
+        c26 (bit-and t26 mask16)
+        r26 (i64-shift-right t26 16)
+        t27 (+ (+ (+ (+ (* a12 b15) (* a13 b14)) (* a14 b13)) (* a15 b12)) r26)
+        c27 (bit-and t27 mask16)
+        r27 (i64-shift-right t27 16)
+        t28 (+ (+ (+ (* a13 b15) (* a14 b14)) (* a15 b13)) r27)
+        c28 (bit-and t28 mask16)
+        r28 (i64-shift-right t28 16)
+        t29 (+ (+ (* a14 b15) (* a15 b14)) r28)
+        c29 (bit-and t29 mask16)
+        r29 (i64-shift-right t29 16)
+        t30 (+ (* a15 b15) r29)
+        c30 (bit-and t30 mask16)
+        r30 (i64-shift-right t30 16)
+        t31 r30
+        c31 (bit-and t31 mask16)
+        w0 (+ c0 (i64-shift-left c1 16))
+        w1 (+ c2 (i64-shift-left c3 16))
+        w2 (+ c4 (i64-shift-left c5 16))
+        w3 (+ c6 (i64-shift-left c7 16))
+        w4 (+ c8 (i64-shift-left c9 16))
+        w5 (+ c10 (i64-shift-left c11 16))
+        w6 (+ c12 (i64-shift-left c13 16))
+        w7 (+ c14 (i64-shift-left c15 16))
+        w8 (+ c16 (i64-shift-left c17 16))
+        w9 (+ c18 (i64-shift-left c19 16))
+        w10 (+ c20 (i64-shift-left c21 16))
+        w11 (+ c22 (i64-shift-left c23 16))
+        w12 (+ c24 (i64-shift-left c25 16))
+        w13 (+ c26 (i64-shift-left c27 16))
+        w14 (+ c28 (i64-shift-left c29 16))
+        w15 (+ c30 (i64-shift-left c31 16))]
+    (mk512 w0 w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14 w15)))
+
 (defn check-u256 [] :i64
-  ;; 両方向 KAT: (1+2=3)、(3-1=2)、borrow 連鎖 (0 - 1 = 2^256-1)、cmp 三方向。
   (let [one (mk 1 0 0 0 0 0 0 0)
         two (mk 2 0 0 0 0 0 0 0)
         three (mk 3 0 0 0 0 0 0 0)
@@ -118,3 +280,22 @@
           3)
         2)
       1)))
+
+(defn check-u256-mul [] :i64
+  (let [
+        a1 (mk 3 0 0 0 0 0 0 0)
+        b1 (mk 7 0 0 0 0 0 0 0)
+        e1 (mk512 21 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+        a2 (mk 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295)
+        b2 (mk 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295)
+        e2 (mk512 1 0 0 0 0 0 0 0 4294967294 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295)
+        a3 (mk 3723427584 2578103244 1432778632 287454020 3285377520 2020189620 3030750855 4041331395)
+        b3 (mk 255 0 0 0 2271560481 267242409 2596069104 305419896)
+        e3 (mk512 286261504 286331153 286331153 286331153 3533368609 2856112464 1037678743 221948439 3797985877 1812223602 1091053297 3051923597 2025797861 2718467429 3937825034 287383565)
+        p1 (u256-mul a1 b1)
+        p2 (u256-mul a2 b2)
+        p3 (u256-mul a3 b3)]
+    (let [v1 (if (= (w p1 0) (w e1 0)) (if (= (w p1 1) (w e1 1)) (if (= (w p1 2) (w e1 2)) (if (= (w p1 3) (w e1 3)) (if (= (w p1 4) (w e1 4)) (if (= (w p1 5) (w e1 5)) (if (= (w p1 6) (w e1 6)) (if (= (w p1 7) (w e1 7)) (if (= (w p1 8) (w e1 8)) (if (= (w p1 9) (w e1 9)) (if (= (w p1 10) (w e1 10)) (if (= (w p1 11) (w e1 11)) (if (= (w p1 12) (w e1 12)) (if (= (w p1 13) (w e1 13)) (if (= (w p1 14) (w e1 14)) (if (= (w p1 15) (w e1 15)) 0 115) 114) 113) 112) 111) 110) 109) 108) 107) 106) 105) 104) 103) 102) 101) 100)
+          v2 (if (= (w p2 0) (w e2 0)) (if (= (w p2 1) (w e2 1)) (if (= (w p2 2) (w e2 2)) (if (= (w p2 3) (w e2 3)) (if (= (w p2 4) (w e2 4)) (if (= (w p2 5) (w e2 5)) (if (= (w p2 6) (w e2 6)) (if (= (w p2 7) (w e2 7)) (if (= (w p2 8) (w e2 8)) (if (= (w p2 9) (w e2 9)) (if (= (w p2 10) (w e2 10)) (if (= (w p2 11) (w e2 11)) (if (= (w p2 12) (w e2 12)) (if (= (w p2 13) (w e2 13)) (if (= (w p2 14) (w e2 14)) (if (= (w p2 15) (w e2 15)) 0 215) 214) 213) 212) 211) 210) 209) 208) 207) 206) 205) 204) 203) 202) 201) 200)
+          v3 (if (= (w p3 0) (w e3 0)) (if (= (w p3 1) (w e3 1)) (if (= (w p3 2) (w e3 2)) (if (= (w p3 3) (w e3 3)) (if (= (w p3 4) (w e3 4)) (if (= (w p3 5) (w e3 5)) (if (= (w p3 6) (w e3 6)) (if (= (w p3 7) (w e3 7)) (if (= (w p3 8) (w e3 8)) (if (= (w p3 9) (w e3 9)) (if (= (w p3 10) (w e3 10)) (if (= (w p3 11) (w e3 11)) (if (= (w p3 12) (w e3 12)) (if (= (w p3 13) (w e3 13)) (if (= (w p3 14) (w e3 14)) (if (= (w p3 15) (w e3 15)) 0 315) 314) 313) 312) 311) 310) 309) 308) 307) 306) 305) 304) 303) 302) 301) 300)]
+      (if (= v1 0) (if (= v2 0) v3 v2) v1))))
