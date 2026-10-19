@@ -7,7 +7,7 @@
              :crypto/ab [:record :crypto/ab [[:a [:ref :crypto/u256]] [:b [:ref :crypto/u256]]]]
              :crypto/jpoint [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]]
              :crypto/u512 [:record :crypto/u512 [[:w0 :i64] [:w1 :i64] [:w2 :i64] [:w3 :i64] [:w4 :i64] [:w5 :i64] [:w6 :i64] [:w7 :i64] [:w8 :i64] [:w9 :i64] [:w10 :i64] [:w11 :i64] [:w12 :i64] [:w13 :i64] [:w14 :i64] [:w15 :i64]]]})
-  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce check-u256 check-u256-mul check-reduce check-jacobian check-scalar-mult check-modn ecdsa-verify check-verify]))
+  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce check-u256 check-u256-mul check-reduce check-jacobian check-scalar-mult check-modn ecdsa-verify check-verify main]))
 
 (def mask32 4294967295)
 (def carry-bit 4294967296)
@@ -830,3 +830,15 @@
         v2 (ecdsa-verify z r s2 qx qy)
         v3 (ecdsa-verify z2 r s qx qy)]
     (if (= v1 0) (if (= v2 4) (if (= v3 4) 0 33) 22) 11)))
+
+;; ---- 実行入口（kexe_loader 経由の receipt 用）----
+;; main は全 KAT を走らせ、0 = 全緑 / 非 0 = 最初の失敗コード。
+(defn main [] :i64
+  (let [v1 (check-u256)
+        v2 (if (= v1 0) (check-u256-mul) v1)
+        v3 (if (= v2 0) (check-reduce) v2)
+        v4 (if (= v3 0) (check-jacobian) v3)
+        v5 (if (= v4 0) (check-scalar-mult) v4)
+        v6 (if (= v5 0) (check-modn) v5)
+        v7 (if (= v6 0) (check-verify) v6)]
+    v7))
