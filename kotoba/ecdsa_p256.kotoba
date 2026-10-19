@@ -6,7 +6,7 @@
   (:schemas {:crypto/u256 [:record :crypto/u256 [[:l0 :i64] [:l1 :i64] [:l2 :i64] [:l3 :i64] [:l4 :i64] [:l5 :i64] [:l6 :i64] [:l7 :i64]]]
              :crypto/jpoint [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]]
              :crypto/u512 [:record :crypto/u512 [[:w0 :i64] [:w1 :i64] [:w2 :i64] [:w3 :i64] [:w4 :i64] [:w5 :i64] [:w6 :i64] [:w7 :i64] [:w8 :i64] [:w9 :i64] [:w10 :i64] [:w11 :i64] [:w12 :i64] [:w13 :i64] [:w14 :i64] [:w15 :i64]]]})
-  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce check-u256 check-u256-mul check-reduce check-jacobian check-scalar-mult]))
+  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce check-u256 check-u256-mul check-reduce check-jacobian check-scalar-mult check-modn]))
 
 (def mask32 4294967295)
 (def carry-bit 4294967296)
@@ -693,3 +693,75 @@
           v3 (if (same-affine? r3 e3) 0 400)
           ]
       (if (= v0 0) (if (= v1 0) (if (= v2 0) v3 v2) v1) v0))))
+
+
+;; ---- mod-n Barrett 約簡（JUN-98 (b)）----
+;; n は一般素数（fast form 無し）。mu2 = floor(2^512/n) - 2^256（224-bit）。
+;; q = hi(x) + (hi(x)*mu2 >> 256) は 257-bit になり得るため u512 で加算。
+;; r = x - q*n は u512 の mod 2^512 減算で正しく畳まる（真の r < 4n、python 200+ 件で収束確認）。
+;; 残差は n の条件付き減算 3 回 + u256 で 1 回で正規化。
+(defn- n-limbs [] [:ref :crypto/u256]
+  (mk 4234356049 4089039554 2803342980 3169254061 4294967295 4294967295 0 4294967295))
+
+(defn- mu2-limbs [] [:ref :crypto/u256]
+  (mk 4007631870 19922309 3743050785 1125713234 4294967295 4294967294 4294967295 0))
+
+(defn- zero512 [] [:ref :crypto/u512]
+  (mk512 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0))
+
+(defn- place0-at8 [x [:ref :crypto/u256]] [:ref :crypto/u512]
+  (mk512 0 0 0 0 0 0 0 0 (limb x 0) (limb x 1) (limb x 2) (limb x 3) (limb x 4) (limb x 5) (limb x 6) (limb x 7)))
+
+(defn- sub-n512-if-nonneg [x [:ref :crypto/u512]] [:ref :crypto/u512]
+  (if (= (u256-cmp (hi256 x) (zero256)) -1)
+    x
+    (u512-sub x (place0 (n-limbs)))))
+
+(defn- modn-reduce [x [:ref :crypto/u512]] [:ref :crypto/u256]
+  (let [hi (hi256 x)
+        t (u256-mul hi (mu2-limbs))
+        hit (hi256 t)
+        q (u512-add (place0 hi) (place0 hit))
+        qlo (lo256 q)
+        qhi (hi256 q)
+        qn (u256-mul qlo (n-limbs))
+        qn2 (if (= (u256-cmp qhi (zero256)) 0) qn (u512-add qn (place0-at8 (n-limbs))))
+        r0 (u512-sub x qn2)
+        r1 (sub-n512-if-nonneg r0)
+        r2 (sub-n512-if-nonneg r1)
+        r3 (sub-n512-if-nonneg r2)
+        y (lo256 r3)
+        y2 (if (= (u256-cmp y (n-limbs)) -1) y (u256-sub y (n-limbs)))]
+    y2))
+
+(defn- modn-mul [a [:ref :crypto/u256] b [:ref :crypto/u256]] [:ref :crypto/u256]
+  (modn-reduce (u256-mul a b)))
+
+(defn check-modn [] :i64
+  (let [
+        x0 (mk512 2529268927 1386140289 4140357947 3106889340 4093542469 516634175 910299296 2018954121 2316197856 1256806337 1145942076 3077487986 118923336 1497822929 591774195 23795237)
+        e0 (mk 2410250599 4020463303 998396744 4053755912 3372438668 961199148 2573538496 3894654203)
+        x1 (mk512 3117328854 2342114880 1263043679 1890669482 2760781409 4094190085 1165426127 2390680632 1356406898 331396899 338548253 1653375991 2761460277 1088664649 986632417 1939823919)
+        e1 (mk 4251773470 3705017788 3900732299 320373756 3677149260 3071398668 3412667810 482473971)
+        x2 (mk512 344953785 802567286 1731783011 3936061458 3629698974 1457318507 83894993 3644564295 2379863736 3710619679 2856161534 3909216508 1441992751 1154427016 3499810949 794289034)
+        e2 (mk 1291221618 1898302506 4201658762 3585567683 2881671064 3098368177 3705197160 321031205)
+        x3 (mk512 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295 4294967295)
+        e3 (mk 3195661985 2200194197 1237151654 1184463260 728493145 675656249 4091106848 1726033300)
+        x4 (mk512 3 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+        e4 (mk 3 0 0 0 0 0 0 0)
+        x5 (mk512 4234356048 4089039554 2803342980 3169254061 4294967295 4294967295 0 4294967295 0 0 0 0 0 0 0 0)
+        e5 (mk 4234356048 4089039554 2803342980 3169254061 4294967295 4294967295 0 4294967295)
+        r0 (modn-reduce x0)
+        r1 (modn-reduce x1)
+        r2 (modn-reduce x2)
+        r3 (modn-reduce x3)
+        r4 (modn-reduce x4)
+        r5 (modn-reduce x5)]
+    (let [v0 (if (= (limb r0 0) (limb e0 0)) (if (= (limb r0 1) (limb e0 1)) (if (= (limb r0 2) (limb e0 2)) (if (= (limb r0 3) (limb e0 3)) (if (= (limb r0 4) (limb e0 4)) (if (= (limb r0 5) (limb e0 5)) (if (= (limb r0 6) (limb e0 6)) (if (= (limb r0 7) (limb e0 7)) 0 107) 106) 105) 104) 103) 102) 101) 100)
+          v1 (if (= (limb r1 0) (limb e1 0)) (if (= (limb r1 1) (limb e1 1)) (if (= (limb r1 2) (limb e1 2)) (if (= (limb r1 3) (limb e1 3)) (if (= (limb r1 4) (limb e1 4)) (if (= (limb r1 5) (limb e1 5)) (if (= (limb r1 6) (limb e1 6)) (if (= (limb r1 7) (limb e1 7)) 0 207) 206) 205) 204) 203) 202) 201) 200)
+          v2 (if (= (limb r2 0) (limb e2 0)) (if (= (limb r2 1) (limb e2 1)) (if (= (limb r2 2) (limb e2 2)) (if (= (limb r2 3) (limb e2 3)) (if (= (limb r2 4) (limb e2 4)) (if (= (limb r2 5) (limb e2 5)) (if (= (limb r2 6) (limb e2 6)) (if (= (limb r2 7) (limb e2 7)) 0 307) 306) 305) 304) 303) 302) 301) 300)
+          v3 (if (= (limb r3 0) (limb e3 0)) (if (= (limb r3 1) (limb e3 1)) (if (= (limb r3 2) (limb e3 2)) (if (= (limb r3 3) (limb e3 3)) (if (= (limb r3 4) (limb e3 4)) (if (= (limb r3 5) (limb e3 5)) (if (= (limb r3 6) (limb e3 6)) (if (= (limb r3 7) (limb e3 7)) 0 407) 406) 405) 404) 403) 402) 401) 400)
+          v4 (if (= (limb r4 0) (limb e4 0)) (if (= (limb r4 1) (limb e4 1)) (if (= (limb r4 2) (limb e4 2)) (if (= (limb r4 3) (limb e4 3)) (if (= (limb r4 4) (limb e4 4)) (if (= (limb r4 5) (limb e4 5)) (if (= (limb r4 6) (limb e4 6)) (if (= (limb r4 7) (limb e4 7)) 0 507) 506) 505) 504) 503) 502) 501) 500)
+          v5 (if (= (limb r5 0) (limb e5 0)) (if (= (limb r5 1) (limb e5 1)) (if (= (limb r5 2) (limb e5 2)) (if (= (limb r5 3) (limb e5 3)) (if (= (limb r5 4) (limb e5 4)) (if (= (limb r5 5) (limb e5 5)) (if (= (limb r5 6) (limb e5 6)) (if (= (limb r5 7) (limb e5 7)) 0 607) 606) 605) 604) 603) 602) 601) 600)
+          ]
+      (if (= v0 0) (if (= v1 0) (if (= v2 0) (if (= v3 0) (if (= v4 0) v5 v4) v3) v2) v1) v0))))
