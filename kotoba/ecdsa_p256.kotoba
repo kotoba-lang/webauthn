@@ -6,7 +6,7 @@
   (:schemas {:crypto/u256 [:record :crypto/u256 [[:l0 :i64] [:l1 :i64] [:l2 :i64] [:l3 :i64] [:l4 :i64] [:l5 :i64] [:l6 :i64] [:l7 :i64]]]
              :crypto/jpoint [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]]
              :crypto/u512 [:record :crypto/u512 [[:w0 :i64] [:w1 :i64] [:w2 :i64] [:w3 :i64] [:w4 :i64] [:w5 :i64] [:w6 :i64] [:w7 :i64] [:w8 :i64] [:w9 :i64] [:w10 :i64] [:w11 :i64] [:w12 :i64] [:w13 :i64] [:w14 :i64] [:w15 :i64]]]})
-  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce check-u256 check-u256-mul check-reduce check-jacobian]))
+  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce check-u256 check-u256-mul check-reduce check-jacobian check-scalar-mult]))
 
 (def mask32 4294967295)
 (def carry-bit 4294967296)
@@ -603,3 +603,93 @@
     (let [v2 (if (= (u256-cmp (record-get p2 :x) e2x) 0) (if (= (u256-cmp (record-get p2 :y) e2y) 0) (if (= (u256-cmp (record-get p2 :z) e2z) 0) 0 102) 101) 100)
           v3 (if (= (u256-cmp (record-get p3 :x) e3x) 0) (if (= (u256-cmp (record-get p3 :y) e3y) 0) (if (= (u256-cmp (record-get p3 :z) e3z) 0) 0 202) 201) 200)]
       (if (= v2 0) v3 v2))))
+
+
+;; ---- scalar mult（right-to-left double-and-add）+ KAT（JUN-98 (b)）----
+;; 無限遠は Z=0 の jpoint で表し、jadd-safe / jdbl-safe が境界を吸収する。
+;; KAT は Jacobian 表現の一意でない問題を同じ楕円線上判定（X*Z^2, Y*Z^3 の不変量）で避ける。
+(defn- jpoint-zero [] [:ref :crypto/jpoint]
+  (record-new [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]]
+              (zero256) (zero256) (zero256)))
+
+(defn- z-zero? [pt [:ref :crypto/jpoint]] :bool
+  (= (u256-cmp (record-get pt :z) (zero256)) 0))
+
+(defn- jadd-safe [p1 [:ref :crypto/jpoint] p2 [:ref :crypto/jpoint]] [:ref :crypto/jpoint]
+  (if (z-zero? p1)
+    p2
+    (if (z-zero? p2)
+      p1
+      (jacobian-add (record-get p1 :x) (record-get p1 :y) (record-get p1 :z)
+                    (record-get p2 :x) (record-get p2 :y) (record-get p2 :z)))))
+
+(defn- jdbl-safe [pt [:ref :crypto/jpoint]] [:ref :crypto/jpoint]
+  (if (z-zero? pt)
+    pt
+    (jacobian-double (record-get pt :x) (record-get pt :y) (record-get pt :z))))
+
+(defn- bits32 [v acc [:ref :crypto/jpoint] cur [:ref :crypto/jpoint]] [:ref :crypto/jpoint]
+  (if (= v 0)
+    acc
+    (bits32 (i64-shift-right v 1)
+            (if (= (bit-and v 1) 1) (jadd-safe acc cur) acc)
+            (jdbl-safe cur))))
+
+(defn- dbl-n [cur [:ref :crypto/jpoint] n] [:ref :crypto/jpoint]
+  (if (= n 0) cur (dbl-n (jdbl-safe cur) (- n 1))))
+
+(defn- scalar-mult [k [:ref :crypto/u256] px [:ref :crypto/u256] py [:ref :crypto/u256] pz [:ref :crypto/u256]] [:ref :crypto/jpoint]
+  (let [cur0 (record-new [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]] px py pz)
+        acc0 (jpoint-zero)
+        a1 (bits32 (limb k 0) acc0 cur0)
+        c1 (dbl-n cur0 32)
+        a2 (bits32 (limb k 1) a1 c1)
+        c2 (dbl-n c1 32)
+        a3 (bits32 (limb k 2) a2 c2)
+        c3 (dbl-n c2 32)
+        a4 (bits32 (limb k 3) a3 c3)
+        c4 (dbl-n c3 32)
+        a5 (bits32 (limb k 4) a4 c4)
+        c5 (dbl-n c4 32)
+        a6 (bits32 (limb k 5) a5 c5)
+        c6 (dbl-n c5 32)
+        a7 (bits32 (limb k 6) a6 c6)
+        c7 (dbl-n c6 32)
+        a8 (bits32 (limb k 7) a7 c7)]
+    a8))
+
+(defn- same-affine? [pa [:ref :crypto/jpoint] pb [:ref :crypto/jpoint]] :bool
+  (let [za (record-get pa :z)
+        zb (record-get pb :z)
+        za2 (mp-mul za za)
+        zb2 (mp-mul zb zb)
+        za3 (mp-mul za2 za)
+        zb3 (mp-mul zb2 zb)
+        xa (mp-mul (record-get pa :x) zb2)
+        xb (mp-mul (record-get pb :x) za2)
+        ya (mp-mul (record-get pa :y) zb3)
+        yb (mp-mul (record-get pb :y) za3)]
+    (and (= (u256-cmp xa xb) 0) (= (u256-cmp ya yb) 0))))
+
+(defn check-scalar-mult [] :i64
+  (let [gx (gx)
+        gy (gy)
+        one (one256)
+        k0 (mk 2 0 0 0 0 0 0 0)
+        e0 (record-new [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]] (mk 1197906296 2785757436 2012355381 3230231010 78977731 2320644099 2365804414 2096266008) (mk 578319313 2651109277 1021936169 3128798694 2675192027 691903174 3683569728 125261072) one)
+        k1 (mk 3 0 0 0 0 0 0 0)
+        e1 (record-new [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]] (mk 3337092460 4215367195 4021135749 3871782689 491516261 3371691925 2788362820 1590420689) (mk 2726121522 2591666471 944748605 3626676278 442802924 927663822 1234763646 2268357644) one)
+        k2 (mk 7 0 0 0 0 0 0 0)
+        e2 (record-new [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]] (mk 830976675 805709936 2819616603 2130311352 2080504672 633024614 2696903494 2387819375) (mk 3253993652 3311278726 3406043937 1405564467 2801111040 1829150595 3761444918 1944788413) one)
+        k3 (mk 255 0 0 0 1985229328 4275878552 2596069104 305419896)
+        e3 (record-new [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]] (mk 4047005567 3059783262 4188906418 4254350606 1985481489 4208508507 2881097980 390351654) (mk 2511838392 1168935056 1242245841 3118339816 13244630 1487641557 2901903067 1024317211) one)
+        r0 (scalar-mult k0 gx gy one)
+        r1 (scalar-mult k1 gx gy one)
+        r2 (scalar-mult k2 gx gy one)
+        r3 (scalar-mult k3 gx gy one)]
+    (let [v0 (if (same-affine? r0 e0) 0 100)
+          v1 (if (same-affine? r1 e1) 0 200)
+          v2 (if (same-affine? r2 e2) 0 300)
+          v3 (if (same-affine? r3 e3) 0 400)
+          ]
+      (if (= v0 0) (if (= v1 0) (if (= v2 0) v3 v2) v1) v0))))
