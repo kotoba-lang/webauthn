@@ -7,7 +7,7 @@
              :crypto/ab [:record :crypto/ab [[:a [:ref :crypto/u256]] [:b [:ref :crypto/u256]]]]
              :crypto/jpoint [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]]
              :crypto/u512 [:record :crypto/u512 [[:w0 :i64] [:w1 :i64] [:w2 :i64] [:w3 :i64] [:w4 :i64] [:w5 :i64] [:w6 :i64] [:w7 :i64] [:w8 :i64] [:w9 :i64] [:w10 :i64] [:w11 :i64] [:w12 :i64] [:w13 :i64] [:w14 :i64] [:w15 :i64]]]})
-  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce check-u256 check-u256-mul check-reduce check-jacobian check-scalar-mult check-modn ecdsa-verify check-verify check-inv cose-extract-x cose-extract-y cose-header-ok check-cose main]))
+  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce check-u256 check-u256-mul check-reduce check-jacobian check-scalar-mult check-modn ecdsa-verify check-verify check-inv cose-extract-x cose-extract-y cose-header-ok check-cose authdata-rpid-ok authdata-flags authdata-counter check-authdata main]))
 
 (def mask32 4294967295)
 (def carry-bit 4294967296)
@@ -993,4 +993,47 @@
           (if h-bad 4 0)
           3)
         2)
+      1)))
+
+
+;; ---- WebAuthn authData ヘッダの fixed-offset 抽出（JUN-98 CBOR glue 2/2）----
+;; authData: rpIdHash(32B) | flags(1B) | signCount(4B) [| aaguid(16B) | credIdLen(2B) | credId | COSE]。
+;; hex chars: rp-hash 0..63 / flags 64..65 / counter 66..73（big-endian）。
+(defn- hex-pair [s i] :i64
+  ;; 2 hex chars（i, i+1）→ 0..255。非 hex なら -1。
+  (let [a (hex-nib s i)
+        b (hex-nib s (+ i 1))]
+    (if (or (= a -1) (= b -1)) -1 (+ (* a 16) b))))
+
+(defn authdata-rpid-ok [s rp-hex] :bool
+  ;; rpIdHash が期待値（SHA-256(rpId) の hex）に一致するか。長さ 64 hex 固定。
+  (and (>= (string-byte-length s) 148)
+       (string=? (string-substring s 0 64) rp-hex)))
+
+(defn authdata-flags [s] :i64
+  (hex-pair s 64))
+
+(defn authdata-counter [s] :i64
+  ;; signCount 4 bytes big-endian（hex 66..73）。
+  (let [a (hex-pair s 66)
+        b (hex-pair s 68)
+        c (hex-pair s 70)
+        d (hex-pair s 72)]
+    (if (or (= a -1) (= b -1) (= c -1) (= d -1))
+      -1
+      (+ (* a 16777216) (* b 65536) (* c 256) d))))
+
+(defn check-authdata [] :i64
+  (let [s "cbd1aac1345a329cd50db5ead5dc8401754ec6ba2ed3c936da08110b8e4c28d84500001234fdec65fe721297377222d7283ab5a38300200a3bf4d9c097ce1389a5b1d8560d8297d4d495104513e9a493548b905e5c7474"
+        rp-h "cbd1aac1345a329cd50db5ead5dc8401754ec6ba2ed3c936da08110b8e4c28d8"
+        bad-rp "0000000000000000000000000000000000000000000000000000000000000000"
+        ok (authdata-rpid-ok s rp-h)
+        bad (authdata-rpid-ok s bad-rp)
+        fl (authdata-flags s)
+        cnt (authdata-counter s)]
+    (if ok
+      (if bad 4
+        (if (= fl 69)
+          (if (= cnt 4660) 0 3)
+          2))
       1)))
