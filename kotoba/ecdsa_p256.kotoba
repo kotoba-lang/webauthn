@@ -7,7 +7,7 @@
              :crypto/ab [:record :crypto/ab [[:a [:ref :crypto/u256]] [:b [:ref :crypto/u256]]]]
              :crypto/jpoint [:record :crypto/jpoint [[:x [:ref :crypto/u256]] [:y [:ref :crypto/u256]] [:z [:ref :crypto/u256]]]]
              :crypto/u512 [:record :crypto/u512 [[:w0 :i64] [:w1 :i64] [:w2 :i64] [:w3 :i64] [:w4 :i64] [:w5 :i64] [:w6 :i64] [:w7 :i64] [:w8 :i64] [:w9 :i64] [:w10 :i64] [:w11 :i64] [:w12 :i64] [:w13 :i64] [:w14 :i64] [:w15 :i64]]]})
-  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce check-u256 check-u256-mul check-reduce check-jacobian check-scalar-mult check-modn ecdsa-verify check-verify check-inv main]))
+  (:export [u256-cmp u256-add u256-sub u256-mul u512-reduce check-u256 check-u256-mul check-reduce check-jacobian check-scalar-mult check-modn ecdsa-verify check-verify check-inv cose-extract-x cose-extract-y cose-header-ok check-cose main]))
 
 (def mask32 4294967295)
 (def carry-bit 4294967296)
@@ -936,4 +936,61 @@
         two (modn-mul s2 w2)]
     (if (= (u256-cmp one (one256)) 0)
       (if (= (u256-cmp two (one256)) 0) 0 2)
+      1)))
+
+
+;; ---- COSE EC2 P-256 公開鍵の fixed-layout 抽出（JUN-98 CBOR glue、v2）----
+;; バイト列は lowercase hex 文字列（cid_crypto_primitives の規約）。
+;; ES256 attested credential の COSE key は 77 bytes 固定形:
+;;   a5 01 02 03 26 20 01 21 58 20 <x:32> 22 58 20 <y:32>
+;; hex chars: ヘッダ 0..19 / x 20..83 / mid 84..89 / y 90..153。
+;; u256 語 wi は hex 文字 (56-8wi)..(63-8wi)、big-endian 内訳（python 検証済み）。
+(defn- hex-nib [s i] :i64
+  ;; hex 文字 1 個（lowercase）→ 0..15、非 hex は -1。
+  (let [c (string-code-point-at s i)]
+    (cond
+      (and (> c 47) (< c 58)) (- c 48)
+      (and (> c 96) (< c 103)) (- c 87)
+      :else -1)))
+
+(defn- hex-u256 [s off] [:ref :crypto/u256]
+  (let [
+        w0 (+ (+ (+ (+ (+ (+ (+ (* (hex-nib s (+ off 56)) 268435456) (* (hex-nib s (+ off 57)) 16777216)) (* (hex-nib s (+ off 58)) 1048576)) (* (hex-nib s (+ off 59)) 65536)) (* (hex-nib s (+ off 60)) 4096)) (* (hex-nib s (+ off 61)) 256)) (* (hex-nib s (+ off 62)) 16)) (* (hex-nib s (+ off 63)) 1))
+        w1 (+ (+ (+ (+ (+ (+ (+ (* (hex-nib s (+ off 48)) 268435456) (* (hex-nib s (+ off 49)) 16777216)) (* (hex-nib s (+ off 50)) 1048576)) (* (hex-nib s (+ off 51)) 65536)) (* (hex-nib s (+ off 52)) 4096)) (* (hex-nib s (+ off 53)) 256)) (* (hex-nib s (+ off 54)) 16)) (* (hex-nib s (+ off 55)) 1))
+        w2 (+ (+ (+ (+ (+ (+ (+ (* (hex-nib s (+ off 40)) 268435456) (* (hex-nib s (+ off 41)) 16777216)) (* (hex-nib s (+ off 42)) 1048576)) (* (hex-nib s (+ off 43)) 65536)) (* (hex-nib s (+ off 44)) 4096)) (* (hex-nib s (+ off 45)) 256)) (* (hex-nib s (+ off 46)) 16)) (* (hex-nib s (+ off 47)) 1))
+        w3 (+ (+ (+ (+ (+ (+ (+ (* (hex-nib s (+ off 32)) 268435456) (* (hex-nib s (+ off 33)) 16777216)) (* (hex-nib s (+ off 34)) 1048576)) (* (hex-nib s (+ off 35)) 65536)) (* (hex-nib s (+ off 36)) 4096)) (* (hex-nib s (+ off 37)) 256)) (* (hex-nib s (+ off 38)) 16)) (* (hex-nib s (+ off 39)) 1))
+        w4 (+ (+ (+ (+ (+ (+ (+ (* (hex-nib s (+ off 24)) 268435456) (* (hex-nib s (+ off 25)) 16777216)) (* (hex-nib s (+ off 26)) 1048576)) (* (hex-nib s (+ off 27)) 65536)) (* (hex-nib s (+ off 28)) 4096)) (* (hex-nib s (+ off 29)) 256)) (* (hex-nib s (+ off 30)) 16)) (* (hex-nib s (+ off 31)) 1))
+        w5 (+ (+ (+ (+ (+ (+ (+ (* (hex-nib s (+ off 16)) 268435456) (* (hex-nib s (+ off 17)) 16777216)) (* (hex-nib s (+ off 18)) 1048576)) (* (hex-nib s (+ off 19)) 65536)) (* (hex-nib s (+ off 20)) 4096)) (* (hex-nib s (+ off 21)) 256)) (* (hex-nib s (+ off 22)) 16)) (* (hex-nib s (+ off 23)) 1))
+        w6 (+ (+ (+ (+ (+ (+ (+ (* (hex-nib s (+ off 8)) 268435456) (* (hex-nib s (+ off 9)) 16777216)) (* (hex-nib s (+ off 10)) 1048576)) (* (hex-nib s (+ off 11)) 65536)) (* (hex-nib s (+ off 12)) 4096)) (* (hex-nib s (+ off 13)) 256)) (* (hex-nib s (+ off 14)) 16)) (* (hex-nib s (+ off 15)) 1))
+        w7 (+ (+ (+ (+ (+ (+ (+ (* (hex-nib s (+ off 0)) 268435456) (* (hex-nib s (+ off 1)) 16777216)) (* (hex-nib s (+ off 2)) 1048576)) (* (hex-nib s (+ off 3)) 65536)) (* (hex-nib s (+ off 4)) 4096)) (* (hex-nib s (+ off 5)) 256)) (* (hex-nib s (+ off 6)) 16)) (* (hex-nib s (+ off 7)) 1))]
+    (mk w0 w1 w2 w3 w4 w5 w6 w7)))
+
+(defn- cose-header [] :string
+  "a5010203262001215820")
+
+(defn cose-header-ok [s] :bool
+  (and (= (string-byte-length s) 154)
+       (string=? (string-substring s 0 20) (cose-header))))
+
+(defn cose-extract-x [s] [:ref :crypto/u256]
+  (hex-u256 s 20))
+
+(defn cose-extract-y [s] [:ref :crypto/u256]
+  (hex-u256 s 90))
+
+(defn check-cose [] :i64
+  (let [s "a50102032620012158206102dd7063e8540e9dd8904f0748967121bade026a6ae768f2ed66ffdcc99396225820781b9a43d04ce50b0620f0877e5fe38183faac572f564652466de486522c4f8d"
+        bad "a501020326200121582100000000000000000000000000000000000000000000000000000000000000002258200000000000000000000000000000000000000000000000000000000000000000"
+        x-got (cose-extract-x s)
+        y-got (cose-extract-y s)
+        x-exp (mk 3704198038 4075644671 1785390952 565894658 122197617 2648215631 1676170254 1627577712)
+        y-exp (mk 1378635661 1181607046 794183250 2214243415 2120213377 102822023 3494700299 2015074883)
+        h-ok (cose-header-ok s)
+        h-bad (cose-header-ok bad)]
+    (if h-ok
+      (if (= (u256-cmp x-got x-exp) 0)
+        (if (= (u256-cmp y-got y-exp) 0)
+          (if h-bad 4 0)
+          3)
+        2)
       1)))
