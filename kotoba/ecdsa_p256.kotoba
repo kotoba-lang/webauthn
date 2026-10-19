@@ -857,6 +857,28 @@
         ab8 (inv-bits 4294967295 (ab-a ab7) (ab-b ab7) 32)]
     (ab-a ab8)))
 
+
+(defn- inv-bits-p [v acc [:ref :crypto/u256] base [:ref :crypto/u256] steps] [:ref :crypto/ab]
+  ;; mod-p 逆元用（mp-mul 版）。32 ステップ固定（modn-inv と同じ教訓）。
+  (if (= steps 0)
+    (ab-make acc base)
+    (inv-bits-p (i64-shift-right v 1)
+                (if (= (bit-and v 1) 1) (mp-mul acc base) acc)
+                (mp-mul base base)
+                (- steps 1))))
+
+(defn- modp-inv [x [:ref :crypto/u256]] [:ref :crypto/u256]
+  ;; x^(p-2) mod p（Fermat）。p-2 の語（python 導出）。
+  (let [ab1 (inv-bits-p 4294967293 (one256) x 32)
+        ab2 (inv-bits-p 4294967295 (ab-a ab1) (ab-b ab1) 32)
+        ab3 (inv-bits-p 4294967295 (ab-a ab2) (ab-b ab2) 32)
+        ab4 (inv-bits-p 0 (ab-a ab3) (ab-b ab3) 32)
+        ab5 (inv-bits-p 0 (ab-a ab4) (ab-b ab4) 32)
+        ab6 (inv-bits-p 0 (ab-a ab5) (ab-b ab5) 32)
+        ab7 (inv-bits-p 1 (ab-a ab6) (ab-b ab6) 32)
+        ab8 (inv-bits-p 4294967295 (ab-a ab7) (ab-b ab7) 32)]
+    (ab-a ab8)))
+
 (defn ecdsa-verify [z [:ref :crypto/u256] r [:ref :crypto/u256] s [:ref :crypto/u256] qx [:ref :crypto/u256] qy [:ref :crypto/u256]] :i64
   (cond
     (or (= (u256-cmp r (zero256)) 0) (= (u256-cmp r (n-limbs)) 1)) 1
@@ -872,7 +894,11 @@
       (if (z-zero? pp)
         3
         (let [x1 (record-get pp :x)
-              v (if (= (u256-cmp x1 (n-limbs)) -1) x1 (u256-sub x1 (n-limbs)))]
+              z3 (record-get pp :z)
+              z2 (mp-mul z3 z3)
+              zinv (modp-inv z2)
+              xaff (mp-mul x1 zinv)
+              v (if (= (u256-cmp xaff (n-limbs)) -1) xaff (u256-sub xaff (n-limbs)))]
           (if (= (u256-cmp v r) 0) 0 4))))))
 
 (defn check-verify [] :i64
@@ -886,7 +912,7 @@
         v1 (ecdsa-verify z r s qx qy)
         v2 (ecdsa-verify z r s2 qx qy)
         v3 (ecdsa-verify z2 r s qx qy)]
-    (if (= v1 0) (if (= v2 4) (if (= v3 4) 0 33) 22) 11)))
+    (if (= v1 0) (if (= v2 4) (if (= v3 4) 0 33) 22) v1)))
 
 ;; ---- 実行入口（kexe_loader 経由の receipt 用）----
 ;; main は全 KAT を走らせ、0 = 全緑 / 非 0 = 最初の失敗コード。

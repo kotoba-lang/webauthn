@@ -20,3 +20,14 @@
 ;;    check-u256 に carry 伝播と wrap の両 KAT を追加（両方向）。
 ;; 2. modn-reduce の n 減算条件が逆（hi != 0 のときだけ引くべきで、
 ;;    逆に常に引いて mod 2^512 で壊れていた）。
+
+;; --- 追記（2026-10-19 実行走・最終）---
+;; check-verify => 0 **ECDSA P-256 検証が pure kotoba で実行緑**（valid → 0、
+;;   s 改ざん → 4、z 改ざん → 4）。実バグ 3 件を実行走で検出して修正:
+;;   ① inv-bits の 32 ステップ固定（ビット長ループは limb 間の base を壊す）
+;;   ② ecdsa-verify が Jacobian の x を直接比較していた → affine x =
+;;     X3 * (Z3^2)^(p-2) を計算してから比較（modp-inv を追加）
+;;   ③ modn-reduce の hi!=0 ガード（前日記録）
+;; per-symbol instance で全グループ緑（u256 / mul / reduce / jacobian /
+;; scalar-mult / modn / inv / verify）。main（全グループ直列）は pairs 天井
+;; 2^6 で到達 — one-instance-per-test（amu test --native-runtime）が正。
